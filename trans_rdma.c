@@ -1,3 +1,35 @@
+/*
+ *
+ * Copyright CEA/DAM/DIF (2012)
+ * contributor : Dominique Martinet  dominique.martinet.ocre@cea.fr //TODO: use a real mail?
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ * ---------------------------------------
+ */
+
+/**
+ * \file    trans_rdma.c
+ * \brief   rdma helper
+ *
+ * This is (very) loosely based on a mix of diod, rping (librdmacm/examples)
+ * and kernel's net/9p/trans_rdma.c
+ *
+ */
+
+
 #include <inttypes.h>
 
 #include <infiniband/arch.h>
@@ -6,11 +38,14 @@
 #include "trans_rdma.h"
 
 /**
- * Post a receive buffer.
+ * rdma_recv: Post a receive buffer.
+ *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans the trans thing! duh, obviously.
  * @param msize max size we can receive
  * @param callback function that'll be called with the received data
+ *
+ * @return 0 on success, dunno what yet on error.
  */
 int rdma_recv(rdma_trans* trans, u32 msize, void (*callback)(rdma_data* data)) {
 	return 0;
@@ -19,7 +54,7 @@ int rdma_recv(rdma_trans* trans, u32 msize, void (*callback)(rdma_data* data)) {
 /**
  * Post a send buffer.
  * Same deal
- * 
+ *
  */
 int rdma_send(rdma_trans* trans, rdma_data* data, void (*callback)(void));
 
@@ -43,7 +78,7 @@ int rdma_send_wait(rdma_trans* trans, rdma_data* data);
 
 // server specific:
 /**
- * 
+ *
  */
 int rdma_write(trans, rdma_rloc, size);
 int rdma_read(trans, rdma_rloc, size);
@@ -51,10 +86,3 @@ int rdma_read(trans, rdma_rloc, size);
 // client specific:
 int rdma_write_request(trans, rdma_rloc, size); // = ask for rdma_write server side ~= rdma_read
 int rdma_read_request(trans, rdma_rloc, size); // = ask for rdma_read server side ~= rdma_write
-
-
-
-
-
-
-
