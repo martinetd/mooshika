@@ -56,7 +56,7 @@ typedef struct rdma_rloc rdma_rloc_t;
  */
 struct rdma_data {
 	uint32_t size; /**< size of the data field */
-	uint8_t* data; /**< opaque data */
+	uint8_t *data; /**< opaque data */
 }; // for 9p, the data would be npfcall which also contains size, but we can't really rely on that...
 
 /**
@@ -73,35 +73,39 @@ struct rdma_trans {
 		RDMA_CLOSING,
 		RDMA_CLOSED,
 	} state;			/**< tracks the transport state machine for connection setup and tear down */
-	struct rdma_cm_id* cm_id;	/**< The RDMA CM ID */
-	struct rdma_event_channel* event_channel;
-	struct ib_pd* pd;		/**< Protection Domain pointer */
-	struct ib_qp* qp;		/**< Queue Pair pointer */
-	struct ib_cq* cq;		/**< Completion Queue pointer */
-	struct ib_mr* dma_mr;		/**< DMA Memory Region pointer */
+	struct rdma_cm_id *cm_id;	/**< The RDMA CM ID */
+	struct rdma_event_channel *event_channel;
+	struct ibv_comp_channel *comp_channel;
+	struct ib_pd *pd;		/**< Protection Domain pointer */
+	struct ib_qp *qp;		/**< Queue Pair pointer */
+	struct ib_cq *cq;		/**< Completion Queue pointer */
 	uint32_t lkey;			/**< The local access only memory region key */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
-	struct semaphore sq_sem;	/**< Semaphore for the SQ */
+	struct ib_mr *recv_mr;		/**< DMA Memory Region pointer */
 	int rq_depth;			/**< The depth of the Receive Queue. */
-	int rq_count;			/**< Count of requests in the Receive Queue. */
 	struct sockaddr_storage addr;	/**< The remote peer's address */
+	size_t ctx_size;
+	rdma_ctx *rfirst;
+	rdma_ctx *rlast;
+	pthread_cond_t cond;
+	pthread_mutex_t lock;
 //TODO: fill this, remember to init stuff.
 };
 
 
 /**
  * \struct rdma_ctx
- *l Context data we can use during recv/send callbacks
+ * Context data we can use during recv/send callbacks
  */
 struct rdma_ctx {
 	int used;			/**< 0 if we can use it for a new recv/send */
 	enum ibv_wc_opcode wc_op;	/**< IBV_WC_SEND or IBV_WC_RECV */
-	struct rdma_trans* rdma;	/**< the main rdma_trans, actually not used... (copied from diod) */
+	struct rdma_trans *rdma;	/**< the main rdma_trans, actually not used... (copied from diod) */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
 	uint32_t len;			/**< size of our own buffer */
-        struct rdmactx* next;		/**< next context */
-	uint8_t* buf;			/**< data starts here. */
+        struct rdmactx *next;		/**< next context */
+	uint8_t *buf;			/**< data starts here. */
 };
 
 
@@ -117,11 +121,11 @@ struct rdma_rloc {
 }
 
 
-int rdma_recv(rdmatrans* trans, uint32_t msize, void (*callback)(rdma_data* data)); // or give trans a recv function an' do trans->recv
-int rdma_send(rdmatrans* trans, rdma_data* data, void (*callback)(void));
+int rdma_recv(rdmatrans *trans, uint32_t msize, void (*callback)(rdma_data *data)); // or give trans a recv function an' do trans->recv
+int rdma_send(rdmatrans *trans, rdma_data *data, void (*callback)(void));
 
-int rdma_recv_wait(rdmatrans* trans, rdma_data** datap, uint32_t msize);
-int rdma_send_wait(rdmatrans* trans, rdma_data* data);
+int rdma_recv_wait(rdmatrans *trans, rdma_data **datap, uint32_t msize);
+int rdma_send_wait(rdmatrans *trans, rdma_data *data);
 
 // server side
 int rdma_write(trans, rdma_rloc, size);
@@ -131,20 +135,20 @@ int rdma_read(trans, rdma_rloc, size);
 int rdma_write_request(trans, rdma_rloc, size); // = ask for rdma_write server side ~= rdma_read
 int rdma_read_request(trans, rdma_rloc, size); // = ask for rdma_read server side ~= rdma_write
 
-struct ibv_mr* register_mr(rdma_trans_t* trans, void* memaddr, size_t size, int access);
-int deregister_mr(struct ibv_mr* mr);
+struct ibv_mr *register_mr(rdma_trans_t *trans, void *memaddr, size_t size, int access);
+int deregister_mr(struct ibv_mr *mr);
 
-rdma_trans_t* rdma_make_rkey(uint64_t addr, ibv_mr* mr, uint32_t size);
+rdma_trans_t *rdma_make_rkey(uint64_t addr, ibv_mr *mr, uint32_t size);
 
 // server specific:
-rdma_trans_t* rdma_create(sockaddr_storage* addr);
-rdma_trans_t* rdma_accept_one(rdma_trans_t* trans);
-int rdma_destroy(rdma_trans_t* rdma_trans);
+rdma_trans_t *rdma_create(sockaddr_storage *addr);
+rdma_trans_t *rdma_accept_one(rdma_trans_t *trans);
+int rdma_destroy(rdma_trans_t *rdma_trans);
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-rdma_trans_t* rdma_connect(sockaddr_storage* addr);
-int rdma_disconnect(rdma_trans_t* trans);
+rdma_trans_t *rdma_connect(sockaddr_storage *addr);
+int rdma_disconnect(rdma_trans_t *trans);
 
 
 
