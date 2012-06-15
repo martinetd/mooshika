@@ -45,110 +45,126 @@ not a question, but 9p only uses recv/send and never _ever_ does any read/write 
 
 // public api;
 
-typedef struct rdma_data rdma_data_t;
-typedef struct rdma_trans rdma_trans_t;
-typedef struct rdma_ctx rdma_ctx_t;
-typedef struct rdma_rloc rdma_rloc_t;
+typedef struct libercat_data libercat_data_t;
+typedef struct libercat_trans libercat_trans_t;
+typedef struct libercat_ctx libercat_ctx_t;
+typedef struct libercat_rloc libercat_rloc_t;
 
 /**
- * \struct rdma_data
+ * \struct libercat_data
  * data size and content to send/just received
  */
-struct rdma_data {
+struct libercat_data {
 	uint32_t size; /**< size of the data field */
 	uint8_t *data; /**< opaque data */
 }; // for 9p, the data would be npfcall which also contains size, but we can't really rely on that...
 
 /**
- * \struct rdma_trans
+ * \struct libercat_trans
  * RDMA transport instance
  */
-struct rdma_trans {
+struct libercat_trans {
 	enum {
-		RDMA_INIT,
-		RDMA_ADDR_RESOLVED,
-		RDMA_ROUTE_RESOLVED,
-		RDMA_CONNECTED,
-		RDMA_FLUSHING,
-		RDMA_CLOSING,
-		RDMA_CLOSED,
+		LIBERCAT_INIT,
+		LIBERCAT_ADDR_RESOLVED,
+		LIBERCAT_ROUTE_RESOLVED,
+		LIBERCAT_CONNECT_REQUEST,
+		LIBERCAT_CONNECTED,
+		LIBERCAT_FLUSHING,
+		LIBERCAT_CLOSING,
+		LIBERCAT_CLOSED,
+		LIBERCAT_ERROR
 	} state;			/**< tracks the transport state machine for connection setup and tear down */
 	struct rdma_cm_id *cm_id;	/**< The RDMA CM ID */
 	struct rdma_event_channel *event_channel;
+	pthread_t cm_thread;		/**< Thread id for connection manager */
 	struct ibv_comp_channel *comp_channel;
-	struct ib_pd *pd;		/**< Protection Domain pointer */
-	struct ib_qp *qp;		/**< Queue Pair pointer */
-	struct ib_cq *cq;		/**< Completion Queue pointer */
+	struct ibv_pd *pd;		/**< Protection Domain pointer */
+	struct ibv_qp *qp;		/**< Queue Pair pointer */
+	struct ibv_cq *cq;		/**< Completion Queue pointer */
+	pthread_t cq_thread;		/**< Thread id for completion queue handler */
 	uint32_t lkey;			/**< The local access only memory region key */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
-	struct ib_mr *recv_mr;		/**< DMA Memory Region pointer */
+	struct ibv_mr *send_mr;		/**< send DMA Memory Region pointer */
 	int rq_depth;			/**< The depth of the Receive Queue. */
+	struct ibv_mr *recv_mr;		/**< receive DMA Memory Region pointer */
 	struct sockaddr_storage addr;	/**< The remote peer's address */
+	int server;
+	int num_accept;
 	size_t ctx_size;
-	rdma_ctx *rfirst;
-	rdma_ctx *rlast;
-	pthread_cond_t cond;
-	pthread_mutex_t lock;
+	uint8_t *snd_buf;
+	libercat_ctx_t *rfirst;
+	libercat_ctx_t *rlast;
+	pthread_mutex_t lock;		/**< lock for events */
+	pthread_cond_t cond;		/**< cond for events */
 //TODO: fill this, remember to init stuff.
 };
 
 
+typedef void (*recv_callback_t)(libercat_trans_t *trans, libercat_data_t *data);
+typedef void (*send_callback_t)(libercat_trans_t *trans, struct ibv_mr *mr);
+typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
+
 /**
- * \struct rdma_ctx
+ * \struct libercat_ctx
  * Context data we can use during recv/send callbacks
  */
-struct rdma_ctx {
+struct libercat_ctx {
 	int used;			/**< 0 if we can use it for a new recv/send */
 	enum ibv_wc_opcode wc_op;	/**< IBV_WC_SEND or IBV_WC_RECV */
-	struct rdma_trans *rdma;	/**< the main rdma_trans, actually not used... (copied from diod) */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
 	uint32_t len;			/**< size of our own buffer */
         struct rdmactx *next;		/**< next context */
 	uint8_t *buf;			/**< data starts here. */
+	ctx_callback_t callback;
+	void *callback_arg;
 };
 
 
 
 /**
- * \struct rdma_rloc
+ * \struct libercat_rloc
  * stores one remote address to write/read at
  */
-struct rdma_rloc {
+struct libercat_rloc {
 	uint64_t rmemaddr; /**< remote address */
 	uint32_t rkey; /**< remote key */
 	uint32_t size; /**< size of the region we can write/read */
-}
+};
 
 
-int rdma_recv(rdmatrans *trans, uint32_t msize, void (*callback)(rdma_data *data)); // or give trans a recv function an' do trans->recv
-int rdma_send(rdmatrans *trans, rdma_data *data, void (*callback)(void));
+int libercat_recv(libercat_trans_t *trans, uint32_t msize, recv_callback_t callback);
+int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, send_callback_t callback);
 
-int rdma_recv_wait(rdmatrans *trans, rdma_data **datap, uint32_t msize);
-int rdma_send_wait(rdmatrans *trans, rdma_data *data);
 
-// server side
-int rdma_write(trans, rdma_rloc, size);
-int rdma_read(trans, rdma_rloc, size);
+int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **datap, uint32_t msize);
+int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data);
+
+/*// server side
+int libercat_write(trans, libercat_rloc_t, size_t size);
+int libercat_read(trans, libercat_rloc_t, size_t size);
 
 // client side
-int rdma_write_request(trans, rdma_rloc, size); // = ask for rdma_write server side ~= rdma_read
-int rdma_read_request(trans, rdma_rloc, size); // = ask for rdma_read server side ~= rdma_write
+int libercat_write_request(trans, libercat_rloc, size); // = ask for rdma_write server side ~= rdma_read
+int libercat_read_request(trans, libercat_rloc, size); // = ask for rdma_read server side ~= rdma_write
+*/
 
-struct ibv_mr *register_mr(rdma_trans_t *trans, void *memaddr, size_t size, int access);
+
+struct ibv_mr *register_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access);
 int deregister_mr(struct ibv_mr *mr);
 
-rdma_trans_t *rdma_make_rkey(uint64_t addr, ibv_mr *mr, uint32_t size);
+libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t size);
 
 // server specific:
-rdma_trans_t *rdma_create(sockaddr_storage *addr);
-rdma_trans_t *rdma_accept_one(rdma_trans_t *trans);
-int rdma_destroy(rdma_trans_t *rdma_trans);
+libercat_trans_t *libercat_create(struct sockaddr_storage *addr);
+libercat_trans_t *libercat_accept_one(libercat_trans_t *trans);
+int libercat_destroy(libercat_trans_t *libercat_trans);
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-rdma_trans_t *rdma_connect(sockaddr_storage *addr);
-int rdma_disconnect(rdma_trans_t *trans);
+libercat_trans_t *libercat_do_connect(struct sockaddr_storage *addr);
+
 
 
 

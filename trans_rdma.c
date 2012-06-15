@@ -29,13 +29,13 @@
  *
  */
 
-
 #include <stdio.h>	//printf
 #include <stdlib.h>	//malloc
 #include <string.h>	//memcpy
 #include <inttypes.h>	//uint*_t
 #include <errno.h>	//ENOMEM
 #include <sys/socket.h> //sockaddr
+#include <pthread.h>	//pthread_* (think it's included by another one)
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
@@ -45,7 +45,7 @@
 
 /* UTILITY FUNCTIONS */
 
-struct ibv_mr *register_mr(rdma_trans_t *trans, void *memaddr, size_t size, int access) {
+struct ibv_mr *register_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
 	return ibv_reg_mr(trans->pd, memaddr, size, access);
 }
 
@@ -53,9 +53,9 @@ int deregister_mr(struct ibv_mr *mr) {
 	return ibv_dereg_mr(mr);
 }
 
-rdma_rloc_t *rdma_make_rkey(uint64_t addr, ibv_mr *mr, uint32_t size) {
-	rdma_rloc_t *rkey;
-	rkey = malloc(sizeof(rdma_rloc_t));
+libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t size) {
+	libercat_rloc_t *rkey;
+	rkey = malloc(sizeof(libercat_rloc_t));
 	if (!rkey) {
 		ERROR_LOG("Out of memory!");
 		return NULL;
@@ -70,108 +70,276 @@ rdma_rloc_t *rdma_make_rkey(uint64_t addr, ibv_mr *mr, uint32_t size) {
 
 /* INIT/SHUTDOWN FUNCTIONS */
 
-static int rdma_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
+/**
+ * libercat_cma_event_handler
+ *
+ * handles _client-side_ addr/route resolved events and disconnect
+ * is not used at all by the server
+ *
+ */
+static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
 	int ret = 0;
-	struct rdma_trans_t *trans = cma_id->context;
+	libercat_trans_t *trans = cma_id->context;
 
-	INFO_LOG("cma_event type %s cma_id %p (%s)",
-		 rdma_event_str(event->event), cma_id,
-		(cma_id == trans->cm_id) ? "parent" : "child") //FIXME: so, do we want to keep both parent and child's id?
+	INFO_LOG("cma_event type %s", rdma_event_str(event->event));
 
-#if 0 //FIXME
-
- 	switch (event->event) {
+	switch (event->event) {
 	case RDMA_CM_EVENT_ADDR_RESOLVED:
-	        cb->state = ADDR_RESOLVED;
-	        ret = rdma_resolve_route(cma_id, 2000);
-                if (ret) {
-                        cb->state = ERROR;
-                        perror("rdma_resolve_route");
-                        sem_post(&cb->sem);
-	        }
-	        break;
+		INFO_LOG("ADDR_RESOLVED");
+		pthread_mutex_lock(&trans->lock);
+		trans->state = LIBERCAT_ADDR_RESOLVED;
+		ret = rdma_resolve_route(cma_id, trans->timeout);
+		if (ret) {
+			trans->state = LIBERCAT_ERROR;
+			ERROR_LOG("rdma_resolve_route failed");
+			pthread_cond_signal(&trans->cond);
+		}
+		pthread_mutex_unlock(&trans->lock);
+		break;
 
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
-	        cb->state = ROUTE_RESOLVED;
-		sem_post(&cb->sem);
-                break;
-                    
-	case RDMA_CM_EVENT_CONNECT_REQUEST:
-		cb->state = CONNECT_REQUEST;
-		cb->child_cm_id = cma_id;
-		DEBUG_LOG("child cma %p\n", cb->child_cm_id);
-	        sem_post(&cb->sem);
-                break;
+		INFO_LOG("ROUTE_RESOLVED");
+		pthread_mutex_lock(&trans->lock);
+		trans->state = LIBERCAT_ROUTE_RESOLVED;
+		pthread_cond_signal(&trans->cond);
+		pthread_mutex_unlock(&trans->lock);
+		break;
 
 	case RDMA_CM_EVENT_ESTABLISHED:
-		DEBUG_LOG("ESTABLISHED\n");
+		INFO_LOG("ESTABLISHED");
+		pthread_mutex_lock(&trans->lock);
+		trans->state = LIBERCAT_CONNECTED;
+		pthread_cond_signal(&trans->cond);
+		pthread_mutex_unlock(&trans->lock);
+		break;
 
-	        /*                                                                                                            
-                 * Server will wake up when first RECV completes.                                                             
-                 */
-	        if (!cb->server) {
-		        cb->state = CONNECTED;
+	case RDMA_CM_EVENT_ADDR_ERROR:
+	case RDMA_CM_EVENT_ROUTE_ERROR:
+	case RDMA_CM_EVENT_CONNECT_ERROR:
+	case RDMA_CM_EVENT_UNREACHABLE:
+	case RDMA_CM_EVENT_REJECTED:
+		INFO_LOG("cma event %s, error %d",
+			rdma_event_str(event->event), event->status);
+		pthread_mutex_lock(&trans->lock);
+		pthread_cond_signal(&trans->cond);
+		pthread_mutex_unlock(&trans->lock);
+		ret = -1;
+		break;
+
+	case RDMA_CM_EVENT_DISCONNECTED:
+		INFO_LOG("DISCONNECT EVENT...");
+		pthread_mutex_lock(&trans->lock);
+		pthread_cond_signal(&trans->cond);
+		pthread_mutex_unlock(&trans->lock);
+		break;
+
+	case RDMA_CM_EVENT_DEVICE_REMOVAL:
+		INFO_LOG("cma detected device removal!!!!\n");
+		ret = -1;
+		break;
+
+	default:
+		INFO_LOG("unhandled event: %s, ignoring\n",
+			rdma_event_str(event->event));
+		break;
+	}
+
+	return ret;
+}
+
+
+static void *libercat_cm_thread(void *arg) {
+	libercat_trans_t *trans = (libercat_trans_t *)arg;
+	struct rdma_cm_event *event;
+	int ret;
+
+	while (1) {
+		ret = rdma_get_cm_event(trans->event_channel, &event);
+		if (ret) {
+			ret = errno;
+			ERROR_LOG("rdma_get_cm_event failed: %d. Stopping event watcher thread", ret);
+			pthread_exit(NULL); //TODO: give the value to main thread somewhere? continue a few times?
 		}
-	        sem_post(&cb->sem);
-                break;
-
-        case RDMA_CM_EVENT_ADDR_ERROR:
-        case RDMA_CM_EVENT_ROUTE_ERROR:
-        case RDMA_CM_EVENT_CONNECT_ERROR:
-        case RDMA_CM_EVENT_UNREACHABLE:
-        case RDMA_CM_EVENT_REJECTED:
-                fprintf(stderr, "cma event %s, error %d\n",
-                        rdma_event_str(event->event), event->status);
-                sem_post(&cb->sem);
-                ret = -1;
-                break;
-
-        case RDMA_CM_EVENT_DISCONNECTED:
-                fprintf(stderr, "%s DISCONNECT EVENT...\n",
-                        cb->server ? "server" : "client");
-                sem_post(&cb->sem);
-                break;
-
-        case RDMA_CM_EVENT_DEVICE_REMOVAL:
-                fprintf(stderr, "cma detected device removal!!!!\n");
-                ret = -1;
-                break;
-
-        default:
-                fprintf(stderr, "unhandled event: %s, ignoring\n",
-                        rdma_event_str(event->event));
-                break;
-        }
-
-        return ret;
-
-#endif
+		ret = libercat_cma_event_handler(event->id, event);
+		rdma_ack_cm_event(event);
+		if (ret) {
+			ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
+			pthread_exit(NULL);
+		}
+	}
 
 }
 
+
+static int libercat_cq_event_handler(libercat_trans_t *trans) {
+	struct ibv_wc wc;
+//	struct ibv_recv_wr *bad_wr;
+	libercat_ctx_t* ctx;
+	int ret;
+
+	while ((ret = ibv_poll_cq(trans->cq, 1, &wc)) == 1) {
+		ret = 0;
+		if (wc.status) {
+			ERROR_LOG("cq completino failed status: %d", wc.status);
+			return -1;
+		}
+
+		switch (wc.opcode) {
+		case IBV_WC_SEND:
+			INFO_LOG("WC_SEND");
+			ctx = (libercat_ctx_t *)wc.wr_id;
+			((send_callback_t)ctx->callback)(trans, ctx->callback_arg);
+
+			pthread_mutex_lock(&trans->lock);
+			ctx->used = 0;
+			pthread_cond_signal(&trans->cond);
+			pthread_mutex_unlock(&trans->lock);
+			
+			break;
+
+		case IBV_WC_RDMA_WRITE:
+			INFO_LOG("WC_RDMA_WRITE");
+			break;
+
+		case IBV_WC_RDMA_READ:
+			INFO_LOG("WC_RDMA_READ");
+			break;
+
+		case IBV_WC_RECV:
+			INFO_LOG("WC_RECV");
+			ctx = (libercat_ctx_t *)wc.wr_id;
+			((recv_callback_t)ctx->callback)(trans, ctx->callback_arg);
+
+			break;
+		default:
+			ERROR_LOG("unknown opcode: %d", wc.opcode);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+static void *libercat_cq_thread(void *arg) {
+	libercat_trans_t *trans = arg; //TODO if this does't complain remove the libercat_trans_t* cast from rdma_cm_thread
+	struct ibv_cq *ev_cq;
+	void *ev_ctx;
+	int ret;
+
+	while (1) {
+		pthread_testcancel();
+
+		ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
+		if (ret) {
+			ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
+			pthread_exit(NULL);
+		}
+		if (ev_cq != trans->cq) {
+			ERROR_LOG("Unknown cq, leaving thread.");
+			pthread_exit(NULL);
+		}
+
+		ret = ibv_req_notify_cq(trans->cq, 0);
+		if (ret) {
+			ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
+			pthread_exit(NULL);
+		}
+
+		ret = libercat_cq_event_handler(trans);
+		ibv_ack_cq_events(trans->cq, 1);
+		if (ret) {
+			ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
+			pthread_exit(NULL);
+		}
+	}
+	
+}
+
+
 /**
- * rdma_init_common: part of the init that's the same for client and server
- * 
+ * libercat_destroy_buffer
+ *
+ * @param trans [INOUT]
+ *
+ * @return void even if some stuff here can fail //FIXME?
+ */
+static void libercat_destroy_buffer(libercat_trans_t *trans) {
+	if (trans->recv_mr)
+		ibv_dereg_mr(trans->recv_mr);
+	if (trans->snd_buf)
+		free(trans->snd_buf);
+}
+
+/**
+ * libercat_destroy_qp: destroys all qp-related stuff for us
+ *
+ * @param trans [INOUT]
+ *
+ * @return void, even if the functions _can_ fail we choose to ignore it. //FIXME?
+ */
+static void libercat_destroy_qp(libercat_trans_t *trans) {
+	if (trans->qp)
+		ibv_destroy_qp(trans->qp);
+	if (trans->cq)
+		ibv_destroy_cq(trans->cq);
+	if (trans->comp_channel)
+		ibv_destroy_comp_channel(trans->comp_channel);
+	if (trans->pd)
+		ibv_dealloc_pd(trans->pd);
+}
+
+
+/**
+ * libercat_destroy_trans: disconnects and free trans data
+ *
+ * @param trans [INOUT] the trans to destroy
+ */
+void libercat_destroy_trans(libercat_trans_t *trans) {
+
+	if (trans->cm_id)
+		rdma_disconnect(trans->cm_id);
+	if (trans->cq_thread)
+		pthread_join(trans->cq_thread, NULL);
+
+	// these two functions do the proper if checks
+	libercat_destroy_buffer(trans);
+	libercat_destroy_qp(trans);
+
+	if (trans->cm_id)
+		rdma_destroy_id(trans->cm_id);
+	if (trans->event_channel)
+		rdma_destroy_event_channel(trans->event_channel);
+	
+	//FIXME check if it is init. if not should just return EINVAL but..
+	pthread_mutex_destroy(&trans->lock);
+	pthread_cond_destroy(&trans->cond);
+
+	free(trans);
+}
+
+/**
+ * libercat_init_common: part of the init that's the same for client and server
+ *
  * @param ptrans [INOUT]
  *
  * @return 0 on success, errno value on failure
  */
-static int rdma_init_common(rdma_trans_t **ptrans) {
+static int libercat_init_common(libercat_trans_t **ptrans) {
 	int ret;
-	rdma_trans_t *trans = *ptrans;
+	libercat_trans_t *trans = *ptrans;
 
-        trans = malloc(sizeof(rdma_trans_t));
+	trans = malloc(sizeof(libercat_trans_t));
 	if (!trans) {
 		ERROR_LOG("Out of memory");
-		return NULL;
+		return -1;
 	}
-	memset(trans, 0, sizeof(rdma_trans_t));
-	
+	memset(trans, 0, sizeof(libercat_trans_t));
+
 	trans->event_channel = rdma_create_event_channel();
 	if (!trans->event_channel) {
 		ret = errno;
 		ERROR_LOG("create_event_channel failed: %d", ret);
-		rdma_destroy_trans(trans);
+		libercat_destroy_trans(trans);
 		return ret;
 	}
 
@@ -179,59 +347,44 @@ static int rdma_init_common(rdma_trans_t **ptrans) {
 	if (ret) {
 		ret = errno;
 		ERROR_LOG("create_id failed: %d", ret);
-		rdma_destroy_trans(trans);
+		libercat_destroy_trans(trans);
 		return ret;
 	}
-	
-	trans->state = RDMA_INIT;
+
+	trans->state = LIBERCAT_INIT;
 	trans->timeout = 30000; // 30s //TODO: find where to use that...
 	trans->sq_depth = 10;
+	trans->num_accept = 10;
+
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %d", ret);
-		rdma_destroy_trans(trans);
+		libercat_destroy_trans(trans);
 		return ret;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %d", ret);
-		rdma_destroy_trans(trans);
+		libercat_destroy_trans(trans);
 		return ret;
 	}
 	trans->ctx_size = 4096;
 	trans->rq_depth = 10;
 
-//	pthread_create(cmthread, NULL, cm_thread, trans?); == rdma_get_cm_event(cm_channel, &event) where struct rdma_cm_event *event + rdma_ack_cm_event(event) + switch on events
+	pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
+
 	return 0;
 }
 
 /**
- * rdma_destroy_qp: destroys all qp-related stuff for us
- * 
- * @param trans [INOUT]
- *
- * @return void, even if the functions _can_ fail we choose to ignore it. //FIXME?
- */
-static void rdma_destroy_qp(rdma_trans_t *trans) {
-	if (trans->qp)
-		ibv_destroy_qp(trans->qp);
-	if (trans->cq)
-		ibv_destroy_cq(trans->cq);
-	if (trans->comp_channel)
-		ibv_destroy_comp_channel(cb->comp_channel);
-	if (trans->pd)
-		ibv_destroy_pd(trans->pd);
-}
-
-/** 
- * transrdma_create_qp: create a qp associated with a trans
+ * libercat_create_qp: create a qp associated with a trans
  *
  * @param trans [INOUT]
  * @param cm_id [IN]
  *
  * @ret 0 on success, errno value on error
  */
-static int transrdma_create_qp(rdma_trans_t *trans, struct rdma_cm_id *cm_id) {
+static int libercat_create_qp(libercat_trans_t *trans, struct rdma_cm_id *cm_id) {
 	struct ibv_qp_init_attr init_attr;
 	int ret;
 
@@ -255,51 +408,50 @@ static int transrdma_create_qp(rdma_trans_t *trans, struct rdma_cm_id *cm_id) {
 }
 
 /**
- * rdma_setup_qp: setups pd, qp an' stuff
+ * libercat_setup_qp: setups pd, qp an' stuff
  *
  * @param trans [INOUT]
- * @param cm_id [IN]
  *
  * @return 0 on success, errno value on failure
  */
-static int rdma_setup_qp(rdma_trans_t *trans, struct rdma_cm_id *cm_id) {
+static int libercat_setup_qp(libercat_trans_t *trans) {
 	int ret;
 
-	trans->pd = ibv_alloc_pd(cm_id->verbs);
+	trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
 	if (!trans->pd) {
 		ret = errno;
 		ERROR_LOG("ibv_alloc_pd failed: %d", ret);
 		return ret;
 	}
 
-	trans->comp_channel = ibv_create_comp_channel(cm_id->verbs);
+	trans->comp_channel = ibv_create_comp_channel(trans->cm_id->verbs);
 	if (!trans->comp_channel) {
 		ret = errno;
 		ERROR_LOG("ibv_create_comp_channel failed: %d", ret);
-		rdma_destroy_qp(trans);
+		libercat_destroy_qp(trans);
 		return ret;
 	}
 
-	trans->cq = ibv_create_cq(cm_id->verbs, trans->sq_depth + trans->rq_depth,
+	trans->cq = ibv_create_cq(trans->cm_id->verbs, trans->sq_depth + trans->rq_depth,
 				  trans, trans->comp_channel, 0);
 	if (!trans->cq) {
 		ret = errno;
 		ERROR_LOG("ibv_create_cq failed: %d", ret);
-		rdma_destroy_qp(trans);
+		libercat_destroy_qp(trans);
 		return ret;
 	}
 
 	ret = ibv_req_notify_cq(trans->cq, 0);
 	if (ret) {
 		ERROR_LOG("ibv_req_notify_cq failed: %d", ret);
-		rdma_destroy_qp(trans);
+		libercat_destroy_qp(trans);
 		return ret;
 	}
 
-	ret = transrdma_create_qp(trans, cm_id);
+	ret = libercat_create_qp(trans, trans->cm_id);
 	if (ret) {
 		ERROR_LOG("our own create_qp failed: %d", ret);
-		rdma_destroy_qp(trans);
+		libercat_destroy_qp(trans);
 		return ret;
 	}
 
@@ -307,60 +459,51 @@ static int rdma_setup_qp(rdma_trans_t *trans, struct rdma_cm_id *cm_id) {
 	return 0;
 }
 
-/**
- * rdma_destroy_buffer
- *
- * @param trans [INOUT]
- *
- * @return void even if some stuff here can fail //FIXME?
- */
-static void rdma_destroy_buffer(rdma_trans_t *trans) {
-	if (trans->recv_mr)
-		ibv_dereg_mr(trans->recv_mr);
-	free(ctx) //FIXME
-}
-
 
 /**
- * rdma_setup_buffer
+ * libercat_setup_buffer
  */
-static int rdma_setup_buffer(rdma_trans_t *trans) {
+static int libercat_setup_buffer(libercat_trans_t *trans) {
 	int ret;
 
-	trans->rfirst = malloc(trans->rq_depth * trans->ctx_size);
-	if (!trans->rfirst) {
+	trans->snd_buf = malloc(trans->rq_depth * trans->ctx_size);
+	if (!trans->snd_buf) {
 		ERROR_LOG("malloc failed");
 		return ENOMEM;
 	}
 
-	trans->recv_mr = ibv_reg_mr(trans->pd, trans->rfirst,
+//	trans->recv_buf = malloc(trans->sq_depth * trans->ctx_size); //FIXME: recv_buff should just be a buffer queue, not a context one. ibv_reg_mr shouldn't register the contexts, but the buffers itself.
+//FIXME: decide wether to malloc all the receive buffers on setup or only when we need 'em.
+
+	trans->recv_mr = ibv_reg_mr(trans->pd, trans->snd_buf,
 				    trans->rq_depth * trans->ctx_size,
 				    IBV_ACCESS_LOCAL_WRITE);
 	if (!trans->recv_mr) {
 		ret = errno;
 		ERROR_LOG("ibv_reg_mr (recv_mr) failed: %d", ret);
-		rdma_destroy_buffer(trans);
+		libercat_destroy_buffer(trans);
 		return ret;
 	}
-	
+
+	return 0;
 }
 
 /**
- * rdma_bind_server
- * 
+ * libercat_bind_server
+ *
  * @param trans [INOUT]
  *
  * @return 0 on success, errno value on failure
  */
-static int rdma_bind_server(rdma_trans_t *trans) {
+static int libercat_bind_server(libercat_trans_t *trans) {
 	int ret;
-	ret = rdma_bind_addr(trans->cm_id, (struct sockaddr*) &trans->sin);
+	ret = rdma_bind_addr(trans->cm_id, (struct sockaddr*) &trans->addr);
 	if (ret) {
 		ret = errno;
-		ERROR_LOG("bind_addr failed with ret: %d", ret);
+
 		return ret;
 	}
-	
+
 	ret = rdma_listen(trans->cm_id, trans->num_accept);
 	if (ret) {
 		ret = errno;
@@ -373,33 +516,38 @@ static int rdma_bind_server(rdma_trans_t *trans) {
 
 
 /**
- * rdma_create: inits everything for server side.
- * 
+ * libercat_create: inits everything for server side.
+ *
  * @param addr [IN] contains the full address (i.e. both ip and port)
  */
-rdma_trans_t *rdma_create(sockaddr_storage *addr) {  //TODO make it return an int an' use trans as argument. figure out who gotta malloc/free..
-	rdma_trans_t *trans;
+libercat_trans_t *libercat_create(struct sockaddr_storage *addr) {  //TODO make it return an int an' use trans as argument. figure out who gotta malloc/free..
+	libercat_trans_t *trans;
+	int ret;
 
-	if (rdma_init_common(&trans)) {
-		free(trans);
+	if ((ret = libercat_init_common(&trans))) {
+		ERROR_LOG("libercat_init_common failed: %d", ret);
 		return NULL;
 	}
 
-	trans->sin = addr;
-	rdma_bind_server(trans);
+	trans->server = 1;
+	trans->addr = *addr;
+	libercat_bind_server(trans);
 
 	return trans;
 }
 
-static rdma_trans_t *clone_trans(rdma_trans_t *listening_trans) {
-	rdma_trans_t *trans = malloc(sizeof(rdma_trans_t));
+static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct rdma_cm_id *cm_id) {
+	libercat_trans_t *trans = malloc(sizeof(libercat_trans_t));
+	int ret;
+
 	if (!trans) {
 		ERROR_LOG("malloc failed");
 		return NULL;
 	}
 
-	memcpy(*trans, *listening_trans, sizeof(rdma_trans_t));
+	memcpy(trans, listening_trans, sizeof(libercat_trans_t));
 
+	trans->cm_id = cm_id;
 	trans->cm_id->context = trans;
 
 	memset(&trans->lock, 0, sizeof(pthread_mutex_t));
@@ -408,107 +556,160 @@ static rdma_trans_t *clone_trans(rdma_trans_t *listening_trans) {
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %d", ret);
-		rdma_destroy_trans(trans);
+		libercat_destroy_trans(trans);
 		return NULL;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %d", ret);
-		rdma_destroy_trans(trans);
+		libercat_destroy_trans(trans);
 		return NULL;
 	}
 
 	return trans;
 }
 
-rdma_trans_t *rdma_accept_one(rdma_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
+static int libercat_accept(libercat_trans_t *trans) {
+	struct rdma_conn_param conn_param;
+	int ret;
+
+	memset(&conn_param, 0, sizeof(struct rdma_conn_param));
+	conn_param.responder_resources = 1;
+	conn_param.initiator_depth = 1;
+	conn_param.private_data = NULL;
+	conn_param.private_data_len = 0;
+	ret = rdma_accept(trans->cm_id, &conn_param);
+	if (ret) {
+		ret = errno;
+		ERROR_LOG("rdma_accept failed: %d", ret);
+		return ret;
+	}
+
+	return 0;	
+}
+
+libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
 
 	//TODO: timeout?
 
 	struct rdma_cm_event *event;
 	struct rdma_cm_id *cm_id;
-	enum rdma_cm_event_type etype;
+	libercat_trans_t *trans = NULL;
 	int ret;
 
-	ret = rdma_get_cm_event(trans->event_channel, &event);
-	if (ret) {
-		ret=errno;
-		ERROR_LOG("rdma_get_cm_event failed: %d", ret);
-		return NULL;
+	while (!trans) {
+		ret = rdma_get_cm_event(trans->event_channel, &event);
+		if (ret) {
+			ret=errno;
+			ERROR_LOG("rdma_get_cm_event failed: %d", ret);
+			return NULL;
+		}
+	
+		cm_id = (struct rdma_cm_id *)event->id;
+
+		switch (event->event) {
+		case RDMA_CM_EVENT_CONNECT_REQUEST:
+			INFO_LOG("CONNECT_REQUEST");
+			trans = clone_trans(rdma_connection, cm_id);
+			break;
+		
+		case RDMA_CM_EVENT_ESTABLISHED:
+			INFO_LOG("ESTABLISHED");
+			break;
+
+		case RDMA_CM_EVENT_DISCONNECTED:
+			INFO_LOG("DISCONNECTED");
+			libercat_destroy_trans((libercat_trans_t *)cm_id->context);
+			break;
+
+		default:
+			INFO_LOG("unhandled event: %s", rdma_event_str(event->event));
+		}
 	}
-
-	trans = clone_trans(rdma_connection);
-	child_cm_id?!
-	rdma_setup_qp(trans, trans->cm_id)
-	rdma_setup_buffers(trans);
-	pthread_create(cq_thread);
-	rdma_do_accept(trans)
-}
-
-/**
- * rdma_destroy_trans: does the final trans free()
- *
- * @param trans [INOUT] the trans to destroy
- */
-void rdma_destroy_trans(rdma_trans_t *trans) {
-	if (trans->cm_id)
-		rdma_destroy_id(trans->cm_id);
-	if (trans->cm_channel)
-		rdma_destroy_event_channel(trans->cm_channel);
-	if (trans->lock)
-		pthread_mutex_destroy(&trans->lock);
-	if (trans->cond)
-		pthread_cond_destroy(&trans->cond);
-	free(trans);
+	if (trans) {
+		libercat_setup_qp(trans);
+		libercat_setup_buffer(trans);
+		pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
+		libercat_accept(trans);
+	}
+	return trans;
 }
 
 /*
- * rdma_bind_client
+ * libercat_bind_client
  *
- * 
+ *
  *
  */
-static int rdma_bind_client(rdma_trans_t *trans) {
+static int libercat_bind_client(libercat_trans_t *trans) {
 	int ret;
 
-	ret = rdma_resolve_addr(trans->cm_id, NULL, (struct sockaddr*) trans->sin, trans->timeout);
+	pthread_mutex_lock(&trans->lock);
+
+	ret = rdma_resolve_addr(trans->cm_id, NULL, (struct sockaddr*) &trans->addr, trans->timeout);
 	if (ret) {
 		ret = errno;
 		ERROR_LOG("rdma_resolve_addr failed: %d", ret);
 		return ret;
 	}
 
-	sem_wait(&trans->sem);
+	pthread_cond_wait(&trans->cond, &trans->lock);
+	pthread_mutex_unlock(&trans->lock);
+
+	return 0;
+}
+
+static int libercat_connect_client(libercat_trans_t *trans) {
+	struct rdma_conn_param conn_param;
+	int ret;
+
+	memset(&conn_param, 0, sizeof(struct rdma_conn_param));
+	conn_param.responder_resources = 1;
+	conn_param.initiator_depth = 1;
+	conn_param.retry_count = 10;
+
+	pthread_mutex_lock(&trans->lock);
+
+	ret = rdma_connect(trans->cm_id, &conn_param);
+	if (ret) {
+		ret = errno;
+		ERROR_LOG("rdma_connect failed: %d", ret);
+		return ret;
+	}
+
+	pthread_cond_wait(&trans->cond, &trans->lock);
+	pthread_mutex_unlock(&trans->lock);
+
+	if (trans->state != LIBERCAT_CONNECTED) {
+		ERROR_LOG("trans not in CONNECTED state as expected");
+		return -1;
+	}
+
+	return 0;
 }
 
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-rdma_trans_t *rdma_connect(sockaddr_storage *addr) {
-	rdma_init_common();
-	rdma_bind_client();
-	rdma_setup_qp(trans, trans->cm_id);
-	rdma_setup_buffers(trans);
-	ibv_post_recv?
-	pthread_create(cq_thread)
-	rdmacat_connect_client()
-}
+libercat_trans_t *libercat_do_connect(struct sockaddr_storage *addr) {
+	libercat_trans_t *trans;
 
-/**
- * rdma_disconnect: disconnect an active connection.
- * Works both on client after rdma_connect and server after rdma_accept_one
- */
-int rdma_disconnect(rdma_trans_t *trans) {
-	rdma_disconnect
-	pthread_join(cqthread, NULL)
-	rdma_destroy_buffers(trans);
-	rdma_destroy_qp(trans);
+	libercat_init_common(&trans);
+	trans->server = 0;
+	libercat_bind_client(trans);
+	libercat_setup_qp(trans);
+	libercat_setup_buffer(trans);
+
+	pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
+	libercat_connect_client(trans);
+
+	return trans;
 }
 
 
 
 /**
- * rdma_recv: Post a receive buffer.
+ * libercat_recv: Post a receive buffer.
  *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans    [IN]
@@ -517,38 +718,88 @@ int rdma_disconnect(rdma_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int rdma_recv(rdma_trans_t *trans, uint32_t msize, void (*callback)(rdma_trans_t *trans, rdma_data_t *data)) {
+int libercat_recv(libercat_trans_t *trans, uint32_t msize, recv_callback_t callback) {
+//	int ret;
+
+
 	return 0;
 }
 
 /**
  * Post a send buffer.
- * Same deal
  *
+ * @return 0 on success, the value of errno on error //TODO change that to data->size? seems redundant to me
  */
-int rdma_send(rdma_trans_t *trans, rdma_data *data, void (*callback)(rdma_trans_t *trans));
-int rdma_send(rdma_trans_t *trans, rdma_data *data, ibv_mr *mr, void (*callback)(rdma_trans_t *trans, rdma_lloc *loc));
+int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, send_callback_t callback) {
+	struct ibv_sge sge;
+	struct ibv_send_wr wr, *bad_wr;
+	libercat_ctx_t *wctx;
+	int i, ret;
+
+	pthread_mutex_lock(&trans->lock);
+
+	do {
+		for (i = 0, wctx = (libercat_ctx_t *)trans->snd_buf;
+		     i < trans->rq_depth;
+		     i++, wctx = (libercat_ctx_t *)((uint8_t *)wctx + trans->ctx_size))
+			if (!wctx->used)
+				break;
+
+		if (i == trans->rq_depth)
+			pthread_cond_wait(&trans->cond, &trans->lock);
+
+	} while ( i == trans->rq_depth );
+
+	pthread_mutex_unlock(&trans->lock);
+
+	wctx->wc_op = IBV_WC_SEND;
+	wctx->used = 1;
+	wctx->len = data->size;
+	wctx->pos = 0;
+	wctx->next = NULL;
+	wctx->callback = (void *)callback;
+	wctx->callback_arg = (void *)mr;
+	memmove(wctx->buf, data->data, data->size); //FIXME: don't copy stuff.
+
+	sge.addr = (uintptr_t) wctx->buf;
+	sge.length = wctx->len;
+	sge.lkey = trans->send_mr->lkey;
+	wr.next = NULL;
+	wr.wr_id = (uint64_t)wctx;
+	wr.opcode = IBV_WR_SEND;
+	wr.send_flags = IBV_SEND_SIGNALED;
+	wr.sg_list = &sge;
+	wr.num_sge = 1;
+
+	ret = ibv_post_send(trans->qp, &wr, &bad_wr);
+	if (ret) {
+		ERROR_LOG("ibv_post_send failed: %d", ret);
+		return ret; // FIXME np_uerror(ret)
+	}
+
+	return 0;
+}
 
 /**
  * Post a receive buffer and waits for _that one and not any other_ to be filled.
  * bad idea. do we want that one? Or place it on top of the queue? But sucks with asynchronism really
  */
-int rdma_recv_wait(rdma_trans_t *trans, rdma_data **datap, uint32_t msize);
+int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **datap, uint32_t msize);
 
 /**
  * Post a send buffer and waits for that one to be completely sent
  * @param trans
  * @param data the size + opaque data.
  */
-int rdma_send_wait(rdma_trans_t *trans, rdma_data *data);
+int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data);
 
 // callbacks would all be run in a big send/recv_thread
 
 
 // server specific:
-int rdma_write(rdma_trans_t *trans, rdma_rloc_t *rdma_rloc, size_t size);
-int rdma_read(rdma_trans_t *trans, rdma_rloc_t *rdma_rloc, size_t size);
+int libercat_write(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size);
+int libercat_read(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size);
 
 // client specific:
-int rdma_write_request(rdma_trans_t *trans, rdma_rloc_t *rdma_rloc, size_t size); // = ask for rdma_write server side ~= rdma_read
-int rdma_read_request(rdma_trans_t *trans, rdma_rloc_t *rdma_rloc, size_t size); // = ask for rdma_read server side ~= rdma_write
+int libercat_write_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_write server side ~= libercat_read
+int libercat_read_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_read server side ~= libercat_write
