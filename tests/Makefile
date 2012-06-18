@@ -10,20 +10,11 @@ MAIN=$(MAIN_SOURCE:.c=)
 
 all: $(MAIN)
 
-server: server.c
-	$(CC) -o $@ $(CFLAGS) $(LDFLAGS) $(OBJECTS) $?
-
-client: client.c
-	$(CC) -o $@ $(CFLAGS) $(LDFLAGS) $(OBJECTS) $?
-
-server_wait: server_wait.c
-	$(CC) -o $@ $(CFLAGS) $(LDFLAGS) $(OBJECTS) $?
-
-client_wait: client_wait.c
-	$(CC) -o $@ $(CFLAGS) $(LDFLAGS) $(OBJECTS) $?
+$(MAIN) : $(OBJECTS) $(MAIN_SOURCE)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJECTS) $@.c -o $@
 
 .o:
 	$(CC) -c $(CFLAGS) $< -o $@
 
 clean:
-	rm -f *.o $(MAIN)
+	rm -f $(OBJECTS) $(MAIN)
