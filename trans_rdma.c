@@ -376,8 +376,6 @@ static int libercat_init_common(libercat_trans_t **ptrans) {
 	trans->ctx_size = 4096;
 	trans->rq_depth = 10;
 
-	pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
-
 	return 0;
 }
 
@@ -705,6 +703,9 @@ libercat_trans_t *libercat_connect(struct sockaddr_storage *addr) {
 	libercat_init_common(&trans);
 	trans->server = 0;
 	trans->addr = *addr;
+
+	pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
+
 	libercat_bind_client(trans);
 	libercat_setup_qp(trans);
 	libercat_setup_buffer(trans);
