@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
 
 	libercat_send(trans, wdata, mr, callback_send, wdata);
 
-	sleep(1);
+	sleep(3);
 
 	return 0;
 }
