@@ -103,8 +103,6 @@ struct libercat_trans {
 };
 
 
-typedef void (*recv_callback_t)(libercat_trans_t *trans, libercat_data_t **pdata);
-typedef void (*send_callback_t)(libercat_trans_t *trans, libercat_data_t *data);
 typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
 
 /**
@@ -135,12 +133,12 @@ struct libercat_rloc {
 };
 
 
-int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, recv_callback_t callback);
-int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, send_callback_t callback);
+int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
+int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
 
 
-int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **datap, uint32_t msize);
-int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data);
+int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **datap, struct ibv_mr *mr);
+int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr);
 
 /*// server side
 int libercat_write(trans, libercat_rloc_t, size_t size);

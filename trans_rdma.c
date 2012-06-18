@@ -36,6 +36,7 @@
 #include <errno.h>	//ENOMEM
 #include <sys/socket.h> //sockaddr
 #include <pthread.h>	//pthread_* (think it's included by another one)
+#include <semaphore.h>  //sem_* (is it a good idea to mix sem and pthread_cond/mutex?)
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
@@ -188,7 +189,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 		case IBV_WC_SEND:
 			INFO_LOG("WC_SEND");
 			ctx = (libercat_ctx_t *)wc.wr_id;
-			((send_callback_t)ctx->callback)(trans, ctx->callback_arg);
+			((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
@@ -208,7 +209,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 		case IBV_WC_RECV:
 			INFO_LOG("WC_RECV");
 			ctx = (libercat_ctx_t *)wc.wr_id;
-			((recv_callback_t)ctx->callback)(trans, ctx->callback_arg);
+			((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
 			break;
 		default:
@@ -726,7 +727,7 @@ libercat_trans_t *libercat_connect(struct sockaddr_storage *addr) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, recv_callback_t callback) {
+int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	struct ibv_sge sge;
 	struct ibv_recv_wr wr, *bad_wr;
 	libercat_ctx_t *rctx;
@@ -754,7 +755,7 @@ int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_m
 	rctx->pos = 0;
 	rctx->next = NULL;
 	rctx->callback = (void *)callback;
-	rctx->callback_arg = (void *)pdata;
+	rctx->callback_arg = callback_arg;
 	rctx->buf = (*pdata)->data;
 
 	sge.addr = (uintptr_t) rctx->buf;
@@ -781,7 +782,7 @@ int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_m
  *
  * @return 0 on success, the value of errno on error //TODO change that to data->size? seems redundant to me
  */
-int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, send_callback_t callback) {
+int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	struct ibv_sge sge;
 	struct ibv_send_wr wr, *bad_wr;
 	libercat_ctx_t *wctx;
@@ -809,7 +810,7 @@ int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr 
 	wctx->pos = 0;
 	wctx->next = NULL;
 	wctx->callback = (void *)callback;
-	wctx->callback_arg = (void *)data;
+	wctx->callback_arg = callback_arg;
 	wctx->buf = data->data;
 
 	sge.addr = (uintptr_t)wctx->buf;
@@ -831,18 +832,40 @@ int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr 
 	return 0;
 }
 
+
+static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
+	sem_t *sem = arg;
+	sem_post(sem);
+}
+
 /**
  * Post a receive buffer and waits for _that one and not any other_ to be filled.
  * bad idea. do we want that one? Or place it on top of the queue? But sucks with asynchronism really
  */
-int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **datap, uint32_t msize);
+int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr) {
+	sem_t sem;
+	sem_init(&sem, 0, 0);
+
+	libercat_recv(trans, pdata, mr, libercat_wait_callback, &sem);
+
+	sem_wait(&sem);
+	return 0;
+}
 
 /**
  * Post a send buffer and waits for that one to be completely sent
  * @param trans
  * @param data the size + opaque data.
  */
-int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data);
+int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr) {
+	sem_t sem;
+	sem_init(&sem, 0, 0);
+
+	libercat_send(trans, data, mr, libercat_wait_callback, &sem);
+
+	sem_wait(&sem);
+	return 0;
+}
 
 // callbacks would all be run in a big send/recv_thread
 
