@@ -45,11 +45,11 @@
 
 /* UTILITY FUNCTIONS */
 
-struct ibv_mr *register_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
-	return ibv_reg_mr(trans->pd, memaddr, size, access);
+struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
+	return ibv_reg_mr(trans->pd, memaddr, size, access); // todo: mr->context = trans;
 }
 
-int deregister_mr(struct ibv_mr *mr) {
+int libercat_dereg_mr(struct ibv_mr *mr) {
 	return ibv_dereg_mr(mr);
 }
 
@@ -149,7 +149,7 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 
 
 static void *libercat_cm_thread(void *arg) {
-	libercat_trans_t *trans = (libercat_trans_t *)arg;
+	libercat_trans_t *trans = arg;
 	struct rdma_cm_event *event;
 	int ret;
 
@@ -192,7 +192,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
-			pthread_cond_signal(&trans->cond);
+			pthread_cond_broadcast(&trans->cond);
 			pthread_mutex_unlock(&trans->lock);
 			
 			break;
@@ -221,7 +221,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 }
 
 static void *libercat_cq_thread(void *arg) {
-	libercat_trans_t *trans = arg; //TODO if this does't complain remove the libercat_trans_t* cast from rdma_cm_thread
+	libercat_trans_t *trans = arg;
 	struct ibv_cq *ev_cq;
 	void *ev_ctx;
 	int ret;
@@ -264,10 +264,10 @@ static void *libercat_cq_thread(void *arg) {
  * @return void even if some stuff here can fail //FIXME?
  */
 static void libercat_destroy_buffer(libercat_trans_t *trans) {
-	if (trans->recv_mr)
-		ibv_dereg_mr(trans->recv_mr);
-	if (trans->snd_buf)
-		free(trans->snd_buf);
+	if (trans->send_buf)
+		free(trans->send_buf);
+	if (trans->recv_buf)
+		free(trans->recv_buf);
 }
 
 /**
@@ -464,25 +464,17 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
  * libercat_setup_buffer
  */
 static int libercat_setup_buffer(libercat_trans_t *trans) {
-	int ret;
 
-	trans->snd_buf = malloc(trans->rq_depth * trans->ctx_size);
-	if (!trans->snd_buf) {
-		ERROR_LOG("malloc failed");
+	trans->recv_buf = malloc(trans->rq_depth * trans->ctx_size);
+	if (!trans->recv_buf) {
+		ERROR_LOG("couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
 
-//	trans->recv_buf = malloc(trans->sq_depth * trans->ctx_size); //FIXME: recv_buff should just be a buffer queue, not a context one. ibv_reg_mr shouldn't register the contexts, but the buffers itself.
-//FIXME: decide wether to malloc all the receive buffers on setup or only when we need 'em.
-
-	trans->recv_mr = ibv_reg_mr(trans->pd, trans->snd_buf,
-				    trans->rq_depth * trans->ctx_size,
-				    IBV_ACCESS_LOCAL_WRITE);
-	if (!trans->recv_mr) {
-		ret = errno;
-		ERROR_LOG("ibv_reg_mr (recv_mr) failed: %d", ret);
-		libercat_destroy_buffer(trans);
-		return ret;
+	trans->send_buf = malloc(trans->sq_depth * trans->ctx_size);
+	if (!trans->send_buf) {
+		ERROR_LOG("couldn't malloc trans->send_buf");
+		return ENOMEM;
 	}
 
 	return 0;
@@ -713,20 +705,63 @@ libercat_trans_t *libercat_do_connect(struct sockaddr_storage *addr) {
  *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans    [IN]
- * @param msize    [IN] max size we can receive
+ * @param ibv_mr   [IN] max size we can receive
  * @param callback [IN] function that'll be called with the received data
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_recv(libercat_trans_t *trans, uint32_t msize, recv_callback_t callback) {
-//	int ret;
+int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, recv_callback_t callback) {
+	struct ibv_sge sge;
+	struct ibv_recv_wr wr, *bad_wr;
+	libercat_ctx_t *rctx;
+	int i, ret;
 
+	pthread_mutex_lock(&trans->lock);
+
+	do {
+		for (i = 0, rctx = (libercat_ctx_t *)trans->recv_buf;
+		     i < trans->rq_depth;
+		     i++, rctx = (libercat_ctx_t *)((uint8_t *)rctx + trans->ctx_size))
+			if (!rctx->used)
+				break;
+
+		if (i == trans->rq_depth)
+			pthread_cond_wait(&trans->cond, &trans->lock);
+
+	} while ( i == trans->rq_depth );
+
+	pthread_mutex_unlock(&trans->lock);
+
+	rctx->wc_op = IBV_WC_RECV;
+	rctx->used = 1;
+	rctx->len = mr->length;
+	rctx->pos = 0;
+	rctx->next = NULL;
+	rctx->callback = (void *)callback;
+	rctx->callback_arg = (void *)pdata;
+	rctx->buf = mr->addr;
+
+	sge.addr = (uintptr_t) rctx->buf;
+	sge.length = rctx->len;
+	sge.lkey = mr->lkey;
+	wr.next = NULL;
+	wr.wr_id = (uint64_t)rctx;
+	wr.sg_list = &sge;
+	wr.num_sge = 1;
+
+	ret = ibv_post_recv(trans->qp, &wr, &bad_wr);
+	if (ret) {
+		ERROR_LOG("ibv_post_recv failed: %d", ret);
+		return ret; // FIXME np_uerror(ret)
+	}
 
 	return 0;
 }
 
 /**
  * Post a send buffer.
+ *
+ * data must be inside the mr!
  *
  * @return 0 on success, the value of errno on error //TODO change that to data->size? seems redundant to me
  */
@@ -739,16 +774,16 @@ int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr 
 	pthread_mutex_lock(&trans->lock);
 
 	do {
-		for (i = 0, wctx = (libercat_ctx_t *)trans->snd_buf;
-		     i < trans->rq_depth;
+		for (i = 0, wctx = (libercat_ctx_t *)trans->send_buf;
+		     i < trans->sq_depth;
 		     i++, wctx = (libercat_ctx_t *)((uint8_t *)wctx + trans->ctx_size))
 			if (!wctx->used)
 				break;
 
-		if (i == trans->rq_depth)
+		if (i == trans->sq_depth)
 			pthread_cond_wait(&trans->cond, &trans->lock);
 
-	} while ( i == trans->rq_depth );
+	} while ( i == trans->sq_depth );
 
 	pthread_mutex_unlock(&trans->lock);
 
@@ -758,12 +793,12 @@ int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr 
 	wctx->pos = 0;
 	wctx->next = NULL;
 	wctx->callback = (void *)callback;
-	wctx->callback_arg = (void *)mr;
-	memmove(wctx->buf, data->data, data->size); //FIXME: don't copy stuff.
+	wctx->callback_arg = (void *)data;
+	wctx->buf = data->data;
 
-	sge.addr = (uintptr_t) wctx->buf;
+	sge.addr = (uintptr_t)wctx->buf;
 	sge.length = wctx->len;
-	sge.lkey = trans->send_mr->lkey;
+	sge.lkey = mr->lkey;
 	wr.next = NULL;
 	wr.wr_id = (uint64_t)wctx;
 	wr.opcode = IBV_WR_SEND;
