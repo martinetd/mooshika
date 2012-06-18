@@ -18,12 +18,14 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-void callback_send(libercat_trans_t *trans, libercat_data_t *pdata) {
+void callback_send(libercat_trans_t *trans, void *arg) {
+	libercat_data_t *pdata = arg;
 
         INFO_LOG("got data: %s", (char*)pdata->data);
 }
 
-void callback_recv(libercat_trans_t *trans, libercat_data_t **pdata) {
+void callback_recv(libercat_trans_t *trans, void *arg) {
+	libercat_data_t **pdata = arg;
 
         INFO_LOG("got data: %s", (char*)(*pdata)->data);
 }
@@ -53,26 +55,40 @@ int main(int argc, char **argv) {
 
 	if (argc == 1) { //client, no argument
 		trans = libercat_connect((struct sockaddr_storage*) &addr);
+	mr = libercat_reg_mr(trans, a, 1000*sizeof(char), IBV_ACCESS_LOCAL_WRITE);
+        rdata->data=mr->addr;
+        rdata->size=100*sizeof(char);
+        libercat_recv_wait(trans, &rdata, mr);
+	INFO_LOG("recv'd data: %s", rdata->data);
+	wdata->data = mr->addr+100*sizeof(char);
+        wdata->size=100*sizeof(char);
+	
+	strcpy((char*)wdata->data, "wooooot, I am text, I'm aliiiiive");
+	libercat_send_wait(trans, wdata, mr);
+	INFO_LOG("sent data: %s", wdata->data);
 
 	} else { // server
 
 	        trans = libercat_create((struct sockaddr_storage*) &addr);
         	trans = libercat_accept_one(trans);
-	}
-
 	mr = libercat_reg_mr(trans, a, 1000*sizeof(char), IBV_ACCESS_LOCAL_WRITE);
-        rdata->data=mr->addr;
-        rdata->size=100*sizeof(char);
-        libercat_recv(trans, &rdata, mr, callback_recv);
-
-#include <unistd.h>
-	sleep(1);
-
 	wdata->data = mr->addr+100*sizeof(char);
         wdata->size=100*sizeof(char);
 	
 	strcpy((char*)wdata->data, "wooooot, I am text, I'm aliiiiive");
-	libercat_send(trans, wdata, mr, callback_send);
+	libercat_send_wait(trans, wdata, mr);
+	INFO_LOG("sent data: %s", wdata->data);
+        rdata->data=mr->addr;
+        rdata->size=100*sizeof(char);
+        libercat_recv_wait(trans, &rdata, mr);
+	INFO_LOG("recv'd data: %s", rdata->data);
+
+	}
+
+
+#include <unistd.h>
+	sleep(1);
+
 
 
 	sleep(3000);
