@@ -93,7 +93,8 @@ struct libercat_trans {
 	int server;
 	int num_accept;
 	size_t ctx_size;
-	uint8_t *snd_buf;
+	uint8_t *send_buf;		/**< pointer to actual context data */
+	uint8_t *recv_buf;		/**< pointer to actual context data */
 	libercat_ctx_t *rfirst;
 	libercat_ctx_t *rlast;
 	pthread_mutex_t lock;		/**< lock for events */
@@ -102,8 +103,8 @@ struct libercat_trans {
 };
 
 
-typedef void (*recv_callback_t)(libercat_trans_t *trans, libercat_data_t *data);
-typedef void (*send_callback_t)(libercat_trans_t *trans, struct ibv_mr *mr);
+typedef void (*recv_callback_t)(libercat_trans_t *trans, libercat_data_t **pdata);
+typedef void (*send_callback_t)(libercat_trans_t *trans, libercat_data_t *data);
 typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
 
 /**
@@ -134,7 +135,7 @@ struct libercat_rloc {
 };
 
 
-int libercat_recv(libercat_trans_t *trans, uint32_t msize, recv_callback_t callback);
+int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, recv_callback_t callback);
 int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, send_callback_t callback);
 
 
@@ -151,8 +152,8 @@ int libercat_read_request(trans, libercat_rloc, size); // = ask for rdma_read se
 */
 
 
-struct ibv_mr *register_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access);
-int deregister_mr(struct ibv_mr *mr);
+struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access);
+int libercat_dereg_mr(struct ibv_mr *mr);
 
 libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t size);
 
