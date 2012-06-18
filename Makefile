@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-Wall -Werror -I/cea/home/gpocre/martinetd/.usr/include/
+CFLAGS=-g -Wall -Werror -I/cea/home/gpocre/martinetd/.usr/include/
 COPTFLAGS=-O2
 LDFLAGS=-L/cea/home/gpocre/martinetd/.usr/lib -libverbs -lrdmacm
 SOURCES=trans_rdma.c
