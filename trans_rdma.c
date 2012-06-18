@@ -118,7 +118,7 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 	case RDMA_CM_EVENT_UNREACHABLE:
 	case RDMA_CM_EVENT_REJECTED:
-		INFO_LOG("cma event %s, error %d",
+		ERROR_LOG("cma event %s, error %d",
 			rdma_event_str(event->event), event->status);
 		pthread_mutex_lock(&trans->lock);
 		pthread_cond_signal(&trans->cond);
@@ -326,13 +326,17 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
  */
 static int libercat_init_common(libercat_trans_t **ptrans) {
 	int ret;
-	libercat_trans_t *trans = *ptrans;
 
-	trans = malloc(sizeof(libercat_trans_t));
-	if (!trans) {
+	libercat_trans_t *trans;
+
+	*ptrans = malloc(sizeof(libercat_trans_t));
+	if (!*ptrans) {
 		ERROR_LOG("Out of memory");
 		return -1;
 	}
+
+	trans=*ptrans;
+
 	memset(trans, 0, sizeof(libercat_trans_t));
 
 	trans->event_channel = rdma_create_event_channel();
@@ -417,6 +421,8 @@ static int libercat_create_qp(libercat_trans_t *trans, struct rdma_cm_id *cm_id)
 static int libercat_setup_qp(libercat_trans_t *trans) {
 	int ret;
 
+	INFO_LOG("trans: %p", trans);
+
 	trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
 	if (!trans->pd) {
 		ret = errno;
@@ -489,6 +495,15 @@ static int libercat_setup_buffer(libercat_trans_t *trans) {
  */
 static int libercat_bind_server(libercat_trans_t *trans) {
 	int ret;
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+	char str[INET_ADDRSTRLEN];
+
+	inet_ntop(AF_INET, &((struct sockaddr_in*)&trans->addr)->sin_addr, str, INET_ADDRSTRLEN);
+	INFO_LOG("addr: %s, port: %d", str, ntohs(((struct sockaddr_in*)&trans->addr)->sin_port));
+
 	ret = rdma_bind_addr(trans->cm_id, (struct sockaddr*) &trans->addr);
 	if (ret) {
 		ret = errno;
@@ -590,7 +605,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 	int ret;
 
 	while (!trans) {
-		ret = rdma_get_cm_event(trans->event_channel, &event);
+		ret = rdma_get_cm_event(rdma_connection->event_channel, &event);
 		if (ret) {
 			ret=errno;
 			ERROR_LOG("rdma_get_cm_event failed: %d", ret);
@@ -683,11 +698,12 @@ static int libercat_connect_client(libercat_trans_t *trans) {
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-libercat_trans_t *libercat_do_connect(struct sockaddr_storage *addr) {
+libercat_trans_t *libercat_connect(struct sockaddr_storage *addr) {
 	libercat_trans_t *trans;
 
 	libercat_init_common(&trans);
 	trans->server = 0;
+	trans->addr = *addr;
 	libercat_bind_client(trans);
 	libercat_setup_qp(trans);
 	libercat_setup_buffer(trans);
@@ -734,12 +750,12 @@ int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_m
 
 	rctx->wc_op = IBV_WC_RECV;
 	rctx->used = 1;
-	rctx->len = mr->length;
+	rctx->len = (*pdata)->size;
 	rctx->pos = 0;
 	rctx->next = NULL;
 	rctx->callback = (void *)callback;
 	rctx->callback_arg = (void *)pdata;
-	rctx->buf = mr->addr;
+	rctx->buf = (*pdata)->data;
 
 	sge.addr = (uintptr_t) rctx->buf;
 	sge.length = rctx->len;
