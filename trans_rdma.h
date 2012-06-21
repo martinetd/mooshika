@@ -93,17 +93,18 @@ struct libercat_trans {
 	int server;
 	int num_accept;
 	size_t ctx_size;
-	uint8_t *send_buf;		/**< pointer to actual context data */
-	uint8_t *recv_buf;		/**< pointer to actual context data */
-	libercat_ctx_t *rfirst;
-	libercat_ctx_t *rlast;
+	libercat_ctx_t *send_buf;		/**< pointer to actual context data */
+	libercat_ctx_t *recv_buf;		/**< pointer to actual context data */
 	pthread_mutex_t lock;		/**< lock for events */
 	pthread_cond_t cond;		/**< cond for events */
+	struct ibv_recv_wr *bad_recv_wr;
+	struct ibv_send_wr *bad_send_wr;
 //TODO: fill this, remember to init stuff.
 };
 
 
 typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
+
 
 /**
  * \struct libercat_ctx
@@ -117,6 +118,11 @@ struct libercat_ctx {
         struct rdmactx *next;		/**< next context */
 	uint8_t *buf;			/**< data starts here. */
 	ctx_callback_t callback;
+	struct ibv_sge sge;
+	union {
+		struct ibv_recv_wr rwr;
+		struct ibv_send_wr wwr;
+	} wr;
 	void *callback_arg;
 };
 
@@ -157,6 +163,7 @@ libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t s
 
 // server specific:
 libercat_trans_t *libercat_create(struct sockaddr_storage *addr);
+int libercat_accept(libercat_trans_t *trans);
 libercat_trans_t *libercat_accept_one(libercat_trans_t *trans);
 void libercat_destroy_trans(libercat_trans_t *libercat_trans);
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
