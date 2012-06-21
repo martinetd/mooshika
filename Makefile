@@ -8,12 +8,12 @@ MAIN_SOURCE=rcat.c
 MAIN=rcat
 
 
-all: $(OBJECTS) main
+all: main
 
 opt: $(OBJECTS)
 	$(CC) $(CFLAGS) $(COPTFLAGS) -o $(MAIN) $(LDFLAGS) $(OBJECTS) $(MAIN_SOURCE)
 
-main:
+main: $(OBJECTS)
 	$(CC) -o $(MAIN) $(CFLAGS) $(LDFLAGS) $(OBJECTS) $(MAIN_SOURCE)
 
 .o:
