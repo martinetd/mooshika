@@ -742,7 +742,7 @@ int libercat_connect(libercat_trans_t *trans) {
 
 
 /**
- * libercat_recv: Post a receive buffer.
+ * libercat_post_recv: Post a receive buffer.
  *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans    [IN]
@@ -751,7 +751,7 @@ int libercat_connect(libercat_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posted recv");
 	libercat_ctx_t *rctx;
 	int i, ret;
@@ -808,7 +808,7 @@ int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_m
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posted send");
 	libercat_ctx_t *wctx;
 	int i, ret;
@@ -862,21 +862,23 @@ int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr 
 
 
 static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
-	sem_t *sem = arg;
-	sem_post(sem);
+	pthread_mutex_t *lock = arg;
+	pthread_mutex_unlock(lock);
 }
 
 /**
  * Post a receive buffer and waits for _that one and not any other_ to be filled.
  * bad idea. do we want that one? Or place it on top of the queue? But sucks with asynchronism really
  */
-int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr) {
-	sem_t sem;
-	sem_init(&sem, 0, 0);
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr) {
+	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-	libercat_recv(trans, pdata, mr, libercat_wait_callback, &sem);
+	pthread_mutex_lock(&lock);
+	libercat_post_recv(trans, pdata, mr, libercat_wait_callback, &lock);
 
-	sem_wait(&sem);
+	pthread_mutex_lock(&lock);
+	pthread_mutex_unlock(&lock);
+	pthread_mutex_destroy(&lock);
 	return 0;
 }
 
@@ -885,13 +887,15 @@ int libercat_recv_wait(libercat_trans_t *trans, libercat_data_t **pdata, struct 
  * @param trans
  * @param data the size + opaque data.
  */
-int libercat_send_wait(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr) {
-	sem_t sem;
-	sem_init(&sem, 0, 0);
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr) {
+	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-	libercat_send(trans, data, mr, libercat_wait_callback, &sem);
+	pthread_mutex_lock(&lock);
+	libercat_post_send(trans, data, mr, libercat_wait_callback, &lock);
 
-	sem_wait(&sem);
+	pthread_mutex_lock(&lock);
+	pthread_mutex_unlock(&lock);
+	pthread_mutex_destroy(&lock);
 	return 0;
 }
 
