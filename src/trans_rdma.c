@@ -44,7 +44,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "trans_rdma.h"
+#include "../include/trans_rdma.h"
 
 /* UTILITY FUNCTIONS */
 
