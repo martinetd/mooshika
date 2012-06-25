@@ -115,8 +115,8 @@ struct libercat_ctx {
 	enum ibv_wc_opcode wc_op;	/**< IBV_WC_SEND or IBV_WC_RECV */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
 	uint32_t len;			/**< size of our own buffer */
-        struct rdmactx *next;		/**< next context */
-	uint8_t *buf;			/**< data starts here. */
+	struct rdmactx *next;		/**< next context */
+	libercat_data_t *data;
 	ctx_callback_t callback;
 	struct ibv_sge sge;
 	union {

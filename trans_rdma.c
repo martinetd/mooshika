@@ -224,6 +224,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			INFO_LOG("WC_RECV");
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
+			ctx->data->size = wc.byte_len;
 			((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
@@ -782,9 +783,9 @@ int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_m
 	rctx->next = NULL;
 	rctx->callback = (void *)callback;
 	rctx->callback_arg = callback_arg;
-	rctx->buf = (*pdata)->data;
+	rctx->data = *pdata;
 
-	rctx->sge.addr = (uintptr_t) rctx->buf;
+	rctx->sge.addr = (uintptr_t) rctx->data->data;
 	rctx->sge.length = rctx->len;
 	rctx->sge.lkey = mr->lkey;
 	rctx->wr.rwr.next = NULL;
@@ -839,9 +840,9 @@ int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr 
 	wctx->next = NULL;
 	wctx->callback = (void *)callback;
 	wctx->callback_arg = callback_arg;
-	wctx->buf = data->data;
+	wctx->data = data;
 
-	wctx->sge.addr = (uintptr_t)wctx->buf;
+	wctx->sge.addr = (uintptr_t)wctx->data->data;
 	wctx->sge.length = wctx->len;
 	wctx->sge.lkey = mr->lkey;
 	wctx->wr.wwr.next = NULL;
