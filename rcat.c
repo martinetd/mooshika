@@ -61,10 +61,17 @@ int main(int argc, char **argv) {
 
 	libercat_data_t *wdata;
 
+	TEST_Z(libercat_init(&trans));
+
+	if (!trans)
+		exit(-1);
+
+	trans->rq_depth=RECV_NUM+1;
+
 	if (argc == 1) { //client, no argument
-		trans = libercat_connect((struct sockaddr_storage*) &addr);
+		TEST_Z(libercat_connect(trans, (struct sockaddr_storage*) &addr));
 	} else { // server
-		trans = libercat_create((struct sockaddr_storage*) &addr);
+		TEST_Z(libercat_bind_server(trans, (struct sockaddr_storage*) &addr));
 		trans = libercat_accept_one(trans);
 		//TODO split accept_one in two and post receive requests before the final rdma_accept call
 	}
