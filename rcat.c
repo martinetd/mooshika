@@ -49,12 +49,6 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 int main(int argc, char **argv) {
 
 
-	struct sockaddr_in addr;
-
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(1235);
-	inet_pton(AF_INET, "10.0.2.22", &addr.sin_addr);
-
 	libercat_trans_t *trans;
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
@@ -66,12 +60,16 @@ int main(int argc, char **argv) {
 	if (!trans)
 		exit(-1);
 
-	trans->rq_depth=RECV_NUM+1;
+	trans->rq_depth = RECV_NUM+1;
+
+	((struct sockaddr_in*) &trans->addr)->sin_family = AF_INET;
+	((struct sockaddr_in*) &trans->addr)->sin_port = htons(1235);
+	inet_pton(AF_INET, "10.0.2.22", &((struct sockaddr_in*) &trans->addr)->sin_addr);
 
 	if (argc == 1) { //client, no argument
-		TEST_Z(libercat_connect(trans, (struct sockaddr_storage*) &addr));
+		TEST_Z(libercat_connect(trans));
 	} else { // server
-		TEST_Z(libercat_bind_server(trans, (struct sockaddr_storage*) &addr));
+		TEST_Z(libercat_bind_server(trans));
 		trans = libercat_accept_one(trans);
 		//TODO split accept_one in two and post receive requests before the final rdma_accept call
 	}
