@@ -37,6 +37,8 @@
 #include <sys/socket.h> //sockaddr
 #include <pthread.h>	//pthread_* (think it's included by another one)
 #include <semaphore.h>  //sem_* (is it a good idea to mix sem and pthread_cond/mutex?)
+#include <arpa/inet.h>  //inet_ntop
+#include <netinet/in.h> //sock_addr_in
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
@@ -340,13 +342,13 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_init_common: part of the init that's the same for client and server
+ * libercat_init: part of the init that's the same for client and server
  *
  * @param ptrans [INOUT]
  *
  * @return 0 on success, errno value on failure
  */
-static int libercat_init_common(libercat_trans_t **ptrans) {
+int libercat_init(libercat_trans_t **ptrans) {
 	int ret;
 
 	libercat_trans_t *trans;
@@ -354,7 +356,7 @@ static int libercat_init_common(libercat_trans_t **ptrans) {
 	*ptrans = malloc(sizeof(libercat_trans_t));
 	if (!*ptrans) {
 		ERROR_LOG("Out of memory");
-		return -1;
+		return ENOMEM;
 	}
 
 	trans=*ptrans;
@@ -490,7 +492,6 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
  * libercat_setup_buffer
  */
 static int libercat_setup_buffer(libercat_trans_t *trans) {
-
 	trans->recv_buf = malloc(trans->rq_depth * sizeof(libercat_ctx_t));
 	if (!trans->recv_buf) {
 		ERROR_LOG("couldn't malloc trans->recv_buf");
@@ -512,14 +513,22 @@ static int libercat_setup_buffer(libercat_trans_t *trans) {
  * libercat_bind_server
  *
  * @param trans [INOUT]
+ * @param addr [IN] contains the full address (i.e. both ip and port)
  *
  * @return 0 on success, errno value on failure
  */
-static int libercat_bind_server(libercat_trans_t *trans) {
+int libercat_bind_server(libercat_trans_t *trans, struct sockaddr_storage *addr) {
 	int ret;
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
+
+	if (!trans) {
+		ERROR_LOG("trans must be initialized first!");
+		return -1;
+	}
+
+	trans->server = 1;
+	trans->addr = *addr;
+
 
 	char str[INET_ADDRSTRLEN];
 
@@ -543,27 +552,6 @@ static int libercat_bind_server(libercat_trans_t *trans) {
 	return 0;
 }
 
-
-/**
- * libercat_create: inits everything for server side.
- *
- * @param addr [IN] contains the full address (i.e. both ip and port)
- */
-libercat_trans_t *libercat_create(struct sockaddr_storage *addr) {  //TODO make it return an int an' use trans as argument. figure out who gotta malloc/free..
-	libercat_trans_t *trans;
-	int ret;
-
-	if ((ret = libercat_init_common(&trans))) {
-		ERROR_LOG("libercat_init_common failed: %s (%d)", strerror(ret), ret);
-		return NULL;
-	}
-
-	trans->server = 1;
-	trans->addr = *addr;
-	libercat_bind_server(trans);
-
-	return trans;
-}
 
 static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct rdma_cm_id *cm_id) {
 	libercat_trans_t *trans = malloc(sizeof(libercat_trans_t));
@@ -721,10 +709,13 @@ static int libercat_connect_client(libercat_trans_t *trans) {
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-libercat_trans_t *libercat_connect(struct sockaddr_storage *addr) {
-	libercat_trans_t *trans;
+int libercat_connect(libercat_trans_t *trans, struct sockaddr_storage *addr) {
+	
+	if (!trans) {
+		ERROR_LOG("trans must be initialized first!");
+		return -1;
+	}
 
-	libercat_init_common(&trans);
 	trans->server = 0;
 	trans->addr = *addr;
 
@@ -737,7 +728,7 @@ libercat_trans_t *libercat_connect(struct sockaddr_storage *addr) {
 	pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
 	libercat_connect_client(trans);
 
-	return trans;
+	return 0;
 }
 
 
@@ -807,7 +798,7 @@ int libercat_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_m
  *
  * data must be inside the mr!
  *
- * @return 0 on success, the value of errno on error //TODO change that to data->size? seems redundant to me
+ * @return 0 on success, the value of errno on error
  */
 int libercat_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posted send");
