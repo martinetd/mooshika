@@ -55,7 +55,8 @@ typedef struct libercat_rloc libercat_rloc_t;
  * data size and content to send/just received
  */
 struct libercat_data {
-	uint32_t size; /**< size of the data field */
+	uint32_t max_size; /**< size of the data field */
+	uint32_t size; /**< size of the data to actually send/read */
 	uint8_t *data; /**< opaque data */
 }; // for 9p, the data would be npfcall which also contains size, but we can't really rely on that...
 

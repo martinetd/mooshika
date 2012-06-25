@@ -41,8 +41,6 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 	write(1, (char *)(*pdata)->data, (*pdata)->size);
 	fflush(stdout);
 
-	(*pdata)->size = CHUNK_SIZE;
-
 	libercat_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
 }
 
@@ -88,7 +86,7 @@ int main(int argc, char **argv) {
 	for (i=0; i < RECV_NUM; i++) {
 		TEST_NZ(rdata[i] = malloc(sizeof(libercat_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
-		rdata[i]->size=CHUNK_SIZE*sizeof(char);
+		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
 		datamr[i].data = (void*)&(rdata[i]);
 		datamr[i].mr = mr;
 		TEST_Z(libercat_post_recv(trans, &(rdata[i]), mr, callback_recv, &(datamr[i])));
@@ -100,7 +98,7 @@ int main(int argc, char **argv) {
 
 	TEST_NZ(wdata = malloc(sizeof(libercat_data_t)));
 	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE*sizeof(char);
-	wdata->size = CHUNK_SIZE*sizeof(char);
+	wdata->max_size = CHUNK_SIZE*sizeof(char);
 
 	fd_set rfds;
 	FD_ZERO(&rfds);
@@ -110,10 +108,9 @@ int main(int argc, char **argv) {
 
 		if (select(1, &rfds, NULL, NULL, NULL) == -1)
 			break;
-		i = read(0, (char*)wdata->data, CHUNK_SIZE);
-		if (i == 0)
+		wdata->size = read(0, (char*)wdata->data, wdata->max_size);
+		if (wdata->size == 0)
 			break;
-		wdata->size = i*sizeof(char);
 
 		TEST_Z(libercat_wait_send(trans, wdata, mr));
 	}
