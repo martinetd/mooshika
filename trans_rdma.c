@@ -777,7 +777,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 
 	rctx->wc_op = IBV_WC_RECV;
 	rctx->used = 1;
-	rctx->len = (*pdata)->size;
+	rctx->len = (*pdata)->max_size;
 	rctx->pos = 0;
 	rctx->next = NULL;
 	rctx->callback = (void *)callback;
