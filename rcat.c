@@ -53,16 +53,22 @@ int main(int argc, char **argv) {
 
 	libercat_data_t *wdata;
 
-	TEST_Z(libercat_init(&trans));
+	libercat_trans_attr_t attr;
+
+	memset(&attr, 0, sizeof(libercat_trans_attr_t));
+
+	attr.rq_depth = RECV_NUM+1;
+
+	((struct sockaddr_in*) &attr.addr)->sin_family = AF_INET;
+	((struct sockaddr_in*) &attr.addr)->sin_port = htons(1235);
+	inet_pton(AF_INET, "10.0.2.22", &((struct sockaddr_in*) &attr.addr)->sin_addr);
+
+
+	TEST_Z(libercat_init(&trans, &attr));
 
 	if (!trans)
 		exit(-1);
 
-	trans->rq_depth = RECV_NUM+1;
-
-	((struct sockaddr_in*) &trans->addr)->sin_family = AF_INET;
-	((struct sockaddr_in*) &trans->addr)->sin_port = htons(1235);
-	inet_pton(AF_INET, "10.0.2.22", &((struct sockaddr_in*) &trans->addr)->sin_addr);
 
 	if (argc == 1) { //client, no argument
 		TEST_Z(libercat_connect(trans));

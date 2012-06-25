@@ -211,15 +211,6 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			ctx->used = 0;
 			pthread_cond_broadcast(&trans->cond);
 			pthread_mutex_unlock(&trans->lock);
-			
-			break;
-
-		case IBV_WC_RDMA_WRITE:
-			INFO_LOG("WC_RDMA_WRITE");
-			break;
-
-		case IBV_WC_RDMA_READ:
-			INFO_LOG("WC_RDMA_READ");
 			break;
 
 		case IBV_WC_RECV:
@@ -233,8 +224,16 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			ctx->used = 0;
 			pthread_cond_broadcast(&trans->cond);
 			pthread_mutex_unlock(&trans->lock);
-
 			break;
+
+		case IBV_WC_RDMA_WRITE:
+			INFO_LOG("WC_RDMA_WRITE");
+			break;
+
+		case IBV_WC_RDMA_READ:
+			INFO_LOG("WC_RDMA_READ");
+			break;
+
 		default:
 			ERROR_LOG("unknown opcode: %d", wc.opcode);
 			return -1;
@@ -276,7 +275,7 @@ static void *libercat_cq_thread(void *arg) {
 			pthread_exit(NULL);
 		}
 	}
-	
+
 }
 
 
@@ -333,7 +332,7 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
 		rdma_destroy_id(trans->cm_id);
 	if (trans->event_channel)
 		rdma_destroy_event_channel(trans->event_channel);
-	
+
 	//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
 	pthread_mutex_destroy(&trans->lock);
 	pthread_cond_destroy(&trans->cond);
@@ -348,7 +347,7 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
  *
  * @return 0 on success, errno value on failure
  */
-int libercat_init(libercat_trans_t **ptrans) {
+int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	int ret;
 
 	libercat_trans_t *trans;
@@ -380,9 +379,17 @@ int libercat_init(libercat_trans_t **ptrans) {
 	}
 
 	trans->state = LIBERCAT_INIT;
-	trans->timeout = 3000000; // in ms
-	trans->sq_depth = 10;
-	trans->num_accept = 10;
+
+	if (!attr->addr.ss_family) { //FIXME: do a proper check?
+		ERROR_LOG("address has to be defined");
+		return EDESTADDRREQ;
+	}
+	trans->addr = attr->addr;
+
+	trans->timeout = attr->timeout ?: 3000000; // in ms
+	trans->sq_depth = attr->sq_depth ?: 10;
+	trans->rq_depth = attr->rq_depth ?: 50;
+	trans->num_accept = attr->num_accept ?: 10;
 
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
@@ -396,7 +403,6 @@ int libercat_init(libercat_trans_t **ptrans) {
 		libercat_destroy_trans(trans);
 		return ret;
 	}
-	trans->rq_depth = 50;
 
 	return 0;
 }
@@ -606,7 +612,7 @@ int libercat_accept(libercat_trans_t *trans) {
 		return ret;
 	}
 
-	return 0;	
+	return 0;
 }
 
 libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
@@ -625,7 +631,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 			ERROR_LOG("rdma_get_cm_event failed: %s (%d)", strerror(ret), ret);
 			return NULL;
 		}
-	
+
 		cm_id = (struct rdma_cm_id *)event->id;
 
 		switch (event->event) {
@@ -633,7 +639,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 			INFO_LOG("CONNECT_REQUEST");
 			trans = clone_trans(rdma_connection, cm_id);
 			break;
-		
+
 		case RDMA_CM_EVENT_ESTABLISHED:
 			INFO_LOG("ESTABLISHED");
 			break;
@@ -714,7 +720,7 @@ static int libercat_connect_client(libercat_trans_t *trans) {
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
 int libercat_connect(libercat_trans_t *trans) {
-	
+
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
 		return -1;
