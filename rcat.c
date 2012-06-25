@@ -43,7 +43,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 
 	(*pdata)->size = CHUNK_SIZE;
 
-	libercat_recv(trans, pdata, datamr->mr, callback_recv, datamr);
+	libercat_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
 }
 
 int main(int argc, char **argv) {
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
 		rdata[i]->size=CHUNK_SIZE*sizeof(char);
 		datamr[i].data = (void*)&(rdata[i]);
 		datamr[i].mr = mr;
-		TEST_Z(libercat_recv(trans, &(rdata[i]), mr, callback_recv, &(datamr[i])));
+		TEST_Z(libercat_post_recv(trans, &(rdata[i]), mr, callback_recv, &(datamr[i])));
 	}
 	
 	if (trans->server) {
@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
 			break;
 		wdata->size = i*sizeof(char);
 
-		TEST_Z(libercat_send_wait(trans, wdata, mr));
+		TEST_Z(libercat_wait_send(trans, wdata, mr));
 	}
 
 
