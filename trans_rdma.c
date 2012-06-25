@@ -205,7 +205,8 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			INFO_LOG("WC_SEND");
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
-			((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
+			if (ctx->callback)
+				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
@@ -218,7 +219,8 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
 			ctx->data->size = wc.byte_len;
-			((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
+			if (ctx->callback)
+				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
