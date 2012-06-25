@@ -50,6 +50,16 @@ typedef struct libercat_trans libercat_trans_t;
 typedef struct libercat_trans_attr libercat_trans_attr_t;
 typedef struct libercat_ctx libercat_ctx_t;
 typedef struct libercat_rloc libercat_rloc_t;
+typedef enum libercat_op libercat_op_t;
+
+enum libercat_op {
+	LIBERCAT_DATA = 0,
+	LIBERCAT_ACK,
+	LIBERCAT_READ_REQ,
+	LIBERCAT_WRITE_REQ,
+	LIBERCAT_RLOC
+};
+
 
 /**
  * \struct libercat_data
@@ -59,7 +69,7 @@ struct libercat_data {
 	uint32_t max_size; /**< size of the data field */
 	uint32_t size; /**< size of the data to actually send/read */
 	uint8_t *data; /**< opaque data */
-}; // for 9p, the data would be npfcall which also contains size, but we can't really rely on that...
+};
 
 /**
  * \struct libercat_trans
@@ -85,7 +95,6 @@ struct libercat_trans {
 	struct ibv_qp *qp;		/**< Queue Pair pointer */
 	struct ibv_cq *cq;		/**< Completion Queue pointer */
 	pthread_t cq_thread;		/**< Thread id for completion queue handler */
-	uint32_t lkey;			/**< The local access only memory region key */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	struct ibv_mr *send_mr;		/**< send DMA Memory Region pointer */
