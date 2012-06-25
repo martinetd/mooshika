@@ -17,7 +17,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "trans_rdma.h"
+#include "../include/trans_rdma.h"
 
 #define CHUNK_SIZE 512
 #define RECV_NUM 3
