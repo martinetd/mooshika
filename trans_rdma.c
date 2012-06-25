@@ -334,7 +334,7 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
 	if (trans->event_channel)
 		rdma_destroy_event_channel(trans->event_channel);
 	
-	//FIXME check if it is init. if not should just return EINVAL but..
+	//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
 	pthread_mutex_destroy(&trans->lock);
 	pthread_cond_destroy(&trans->cond);
 
@@ -517,7 +517,7 @@ static int libercat_setup_buffer(libercat_trans_t *trans) {
  *
  * @return 0 on success, errno value on failure
  */
-int libercat_bind_server(libercat_trans_t *trans, struct sockaddr_storage *addr) {
+int libercat_bind_server(libercat_trans_t *trans) {
 	int ret;
 
 
@@ -526,8 +526,12 @@ int libercat_bind_server(libercat_trans_t *trans, struct sockaddr_storage *addr)
 		return -1;
 	}
 
+	if (!trans->addr.ss_family) {
+		ERROR_LOG("trans.addr must be set");
+		return -1;
+	}
+
 	trans->server = 1;
-	trans->addr = *addr;
 
 
 	char str[INET_ADDRSTRLEN];
@@ -709,15 +713,19 @@ static int libercat_connect_client(libercat_trans_t *trans) {
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-int libercat_connect(libercat_trans_t *trans, struct sockaddr_storage *addr) {
+int libercat_connect(libercat_trans_t *trans) {
 	
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
 		return -1;
 	}
 
+	if (!trans->addr.ss_family) {
+		ERROR_LOG("trans.addr must be set");
+		return -1;
+	}
+
 	trans->server = 0;
-	trans->addr = *addr;
 
 	pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
 

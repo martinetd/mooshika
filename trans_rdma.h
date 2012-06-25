@@ -165,14 +165,14 @@ libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t s
 int libercat_init(libercat_trans_t **trans);
 
 // server specific:
-int libercat_bind_server(libercat_trans_t *trans, struct sockaddr_storage *addr);
+int libercat_bind_server(libercat_trans_t *trans);
 int libercat_accept(libercat_trans_t *trans);
 libercat_trans_t *libercat_accept_one(libercat_trans_t *trans);
 void libercat_destroy_trans(libercat_trans_t *libercat_trans);
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
-int libercat_connect(libercat_trans_t *trans, struct sockaddr_storage *addr);
+int libercat_connect(libercat_trans_t *trans);
 
 
 
