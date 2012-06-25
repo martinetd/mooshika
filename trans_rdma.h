@@ -47,6 +47,7 @@ not a question, but 9p only uses recv/send and never _ever_ does any read/write 
 
 typedef struct libercat_data libercat_data_t;
 typedef struct libercat_trans libercat_trans_t;
+typedef struct libercat_trans_attr libercat_trans_attr_t;
 typedef struct libercat_ctx libercat_ctx_t;
 typedef struct libercat_rloc libercat_rloc_t;
 
@@ -93,14 +94,20 @@ struct libercat_trans {
 	struct sockaddr_storage addr;	/**< The remote peer's address */
 	int server;
 	int num_accept;
-	size_t ctx_size;
 	libercat_ctx_t *send_buf;		/**< pointer to actual context data */
 	libercat_ctx_t *recv_buf;		/**< pointer to actual context data */
 	pthread_mutex_t lock;		/**< lock for events */
 	pthread_cond_t cond;		/**< cond for events */
 	struct ibv_recv_wr *bad_recv_wr;
 	struct ibv_send_wr *bad_send_wr;
-//TODO: fill this, remember to init stuff.
+};
+
+struct libercat_trans_attr {
+	long timeout;			/**< Number of mSecs to wait for connection management events */
+	int sq_depth;			/**< The depth of the Send Queue */
+	int rq_depth;			/**< The depth of the Receive Queue. */
+	struct sockaddr_storage addr;	/**< The remote peer's address */
+	int num_accept;
 };
 
 
@@ -163,7 +170,7 @@ int libercat_dereg_mr(struct ibv_mr *mr);
 libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t size);
 
 
-int libercat_init(libercat_trans_t **trans);
+int libercat_init(libercat_trans_t **trans, libercat_trans_attr_t *attr);
 
 // server specific:
 int libercat_bind_server(libercat_trans_t *trans);
