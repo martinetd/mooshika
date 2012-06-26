@@ -48,15 +48,42 @@
 
 /* UTILITY FUNCTIONS */
 
+/**
+ * libercat_reg_mr: registers memory for rdma use (almost the same as ibv_reg_mr)
+ *
+ * @param trans   [IN]
+ * @param memaddr [IN] the address to register
+ * @param size    [IN] the size of the area to register
+ * @param access  [IN] the access to grants to the mr (e.g. IBV_ACCESS_LOCAL_WRITE)
+ *
+ * @return a pointer to the mr if registered correctly or NULL on failure
+ */
+
 struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
 	return ibv_reg_mr(trans->pd, memaddr, size, access); // todo: mr->context = trans;
 }
 
+/**
+ * libercat_reg_mr: deregisters memory for rdma use (exactly ibv_dereg_mr)
+ *
+ * @param mr [INOUT] the mr to deregister
+ *
+ * @return 0 on success, errno value on failure
+ */
 int libercat_dereg_mr(struct ibv_mr *mr) {
 	return ibv_dereg_mr(mr);
 }
 
-libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t size) {
+/**
+ * libercat_make_rkey: makes a rkey to send it for remote host use
+ * 
+ * @param mr   [IN] the mr in which the addr belongs
+ * @param addr [IN] the addr to give
+ * @param size [IN] the size to allow (hint)
+ *
+ * @return a pointer to the rkey on success, NULL on failure.
+ */
+libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
 	libercat_rloc_t *rkey;
 	rkey = malloc(sizeof(libercat_rloc_t));
 	if (!rkey) {
@@ -74,10 +101,7 @@ libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t s
 /* INIT/SHUTDOWN FUNCTIONS */
 
 /**
- * libercat_cma_event_handler
- *
- * handles _client-side_ addr/route resolved events and disconnect
- * is not used at all by the server
+ * libercat_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone) //FIXME: should we destroy trans on disconnect? that would be evil...
  *
  */
 static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
@@ -157,7 +181,10 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 	return ret;
 }
 
-
+/**
+ * libercat_cm_thread: thread function which waits for new connection events and gives them to handler (then ack the event)
+ *
+ */
 static void *libercat_cm_thread(void *arg) {
 	libercat_trans_t *trans = arg;
 	struct rdma_cm_event *event;
@@ -180,7 +207,12 @@ static void *libercat_cm_thread(void *arg) {
 
 }
 
-
+/**
+ * libercat_cq_event_handler: completion queue event handler.
+ * marks contexts back out of use and calls the appropriate callbacks for each kind of event
+ *
+ * @return 0 on success, work completion status if not 0
+ */
 static int libercat_cq_event_handler(libercat_trans_t *trans) {
 	struct ibv_wc wc;
 	libercat_ctx_t* ctx;
@@ -197,7 +229,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 		}
 		if (wc.status) {
 			ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
-			return -1;
+			return wc.status;
 		}
 
 		switch (wc.opcode) {
@@ -245,6 +277,10 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 	return 0;
 }
 
+/**
+ * libercat_cq_thread: thread function which waits for new completion events and gives them to handler (then ack the event)
+ *
+ */
 static void *libercat_cq_thread(void *arg) {
 	libercat_trans_t *trans = arg;
 	struct ibv_cq *ev_cq;
@@ -346,6 +382,7 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
  * libercat_init: part of the init that's the same for client and server
  *
  * @param ptrans [INOUT]
+ * @param attr   [IN]    attributes to set parameters in ptrans. attr->addr must be set, others can be either 0 or sane values.
  *
  * @return 0 on success, errno value on failure
  */
@@ -521,7 +558,6 @@ static int libercat_setup_buffer(libercat_trans_t *trans) {
  * libercat_bind_server
  *
  * @param trans [INOUT]
- * @param addr [IN] contains the full address (i.e. both ip and port)
  *
  * @return 0 on success, errno value on failure
  */
@@ -531,12 +567,7 @@ int libercat_bind_server(libercat_trans_t *trans) {
 
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
-		return -1;
-	}
-
-	if (!trans->addr.ss_family) {
-		ERROR_LOG("trans.addr must be set");
-		return -1;
+		return EINVAL;
 	}
 
 	trans->server = 1;
@@ -598,6 +629,13 @@ static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct r
 	return trans;
 }
 
+/**
+ * libercat_accept: does the real connection acceptance //FIXME it's still called by accept_one, either make it static again or don't call it in accept_one...
+ *
+ * @param trans [IN]
+ *
+ * @return 0 on success, the value of errno on error
+ */
 int libercat_accept(libercat_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
@@ -617,6 +655,13 @@ int libercat_accept(libercat_trans_t *trans) {
 	return 0;
 }
 
+/**
+ * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it //FIXME still not safe for concurrent connection requests
+ *
+ * @param rdma_connection [IN] the mother trans
+ *
+ * @return a new trans for the child on success, NULL on failure
+ */
 libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
 
 	//TODO: timeout?
@@ -656,7 +701,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 		}
 	}
 	if (trans) {
-		libercat_setup_qp(trans);
+		libercat_setup_qp(trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
 		libercat_setup_buffer(trans);
 		pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
 		pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
@@ -665,10 +710,9 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 	return trans;
 }
 
-/*
- * libercat_bind_client
- *
- *
+/**
+ * libercat_bind_client: resolve addr and route for the client and waits till it's done
+ * (the route and pthread_cond_signal is done in the cm thread)
  *
  */
 static int libercat_bind_client(libercat_trans_t *trans) {
@@ -689,6 +733,10 @@ static int libercat_bind_client(libercat_trans_t *trans) {
 	return 0;
 }
 
+/**
+ * libercat_connect_client: does the actual connection to the server //FIXME: do we want to remove the static to allow for post_recv before connecting?
+ *
+ */
 static int libercat_connect_client(libercat_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
@@ -712,25 +760,24 @@ static int libercat_connect_client(libercat_trans_t *trans) {
 
 	if (trans->state != LIBERCAT_CONNECTED) {
 		ERROR_LOG("trans not in CONNECTED state as expected");
-		return -1;
+		return ENOTCONN;
 	}
 
 	return 0;
 }
 
-// do we want create/destroy + listen/shutdown, or can both be done in a single call?
-// if second we could have create/destroy shared with client, but honestly there's not much to share...
-// client
+/**
+ * libercat_connect: connects a client to a server
+ *
+ * @param trans [INOUT] trans must be init first
+ *
+ * @return 0 on success, the value of errno on error 
+ */
 int libercat_connect(libercat_trans_t *trans) {
 
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
-		return -1;
-	}
-
-	if (!trans->addr.ss_family) {
-		ERROR_LOG("trans.addr must be set");
-		return -1;
+		return EINVAL;
 	}
 
 	trans->server = 0;
@@ -753,9 +800,11 @@ int libercat_connect(libercat_trans_t *trans) {
  * libercat_post_recv: Post a receive buffer.
  *
  * Need to post recv buffers before the opposite side tries to send anything!
- * @param trans    [IN]
- * @param ibv_mr   [IN] max size we can receive
- * @param callback [IN] function that'll be called with the received data
+ * @param trans        [IN]
+ * @param pdata        [OUT] the data buffer to be filled with received data //FIXME: isn't a *data enough?
+ * @param mr           [IN]  the mr in which the data lives
+ * @param callback     [IN]  function that'll be called when done
+ * @param callback_arg [IN]  argument to give to the callback
  *
  * @return 0 on success, the value of errno on error
  */
@@ -775,7 +824,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 
 		if (i == trans->rq_depth) {
 			INFO_LOG("Waiting for cond");
-//			pthread_cond_wait(&trans->cond, &trans->lock);
+			pthread_cond_wait(&trans->cond, &trans->lock);
 		}
 
 	} while ( i == trans->rq_depth );
@@ -812,7 +861,11 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 /**
  * Post a send buffer.
  *
- * data must be inside the mr!
+ * @param trans        [IN]
+ * @param data         [IN] the data buffer to be sent
+ * @param mr           [IN] the mr in which the data lives
+ * @param callback     [IN] function that'll be called when done
+ * @param callback_arg [IN] argument to give to the callback
  *
  * @return 0 on success, the value of errno on error
  */
@@ -868,7 +921,10 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 	return 0;
 }
 
-
+/**
+ * libercat_wait_callback: send/recv callback that just unlocks a mutex.
+ *
+ */
 static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
 	pthread_mutex_t *lock = arg;
 	pthread_mutex_unlock(lock);
@@ -876,35 +932,52 @@ static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
 
 /**
  * Post a receive buffer and waits for _that one and not any other_ to be filled.
- * bad idea. do we want that one? Or place it on top of the queue? But sucks with asynchronism really
+ * Generally a bad idea to use that one unless only that one is used.
+ *
+ * @param trans [IN]
+ * @param pdata [OUT] the data buffer to be filled with the received data
+ * @param mr    [IN]  the memory region in which data lives
+ *
+ * @return 0 on success, the value of errno on error
  */
 int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	int ret;
 
 	pthread_mutex_lock(&lock);
-	libercat_post_recv(trans, pdata, mr, libercat_wait_callback, &lock);
+	ret = libercat_post_recv(trans, pdata, mr, libercat_wait_callback, &lock);
 
-	pthread_mutex_lock(&lock);
-	pthread_mutex_unlock(&lock);
-	pthread_mutex_destroy(&lock);
-	return 0;
+	if (!ret) {
+		pthread_mutex_lock(&lock);
+		pthread_mutex_unlock(&lock);
+		pthread_mutex_destroy(&lock);
+	}
+
+	return ret;
 }
 
 /**
  * Post a send buffer and waits for that one to be completely sent
- * @param trans
- * @param data the size + opaque data.
+ * @param trans [IN]
+ * @param data  [IN] the data to send
+ * @param mr    [IN] the memory region in which data lives
+ *
+ * @return 0 on success, the value of errno on error
  */
 int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	int ret;
 
 	pthread_mutex_lock(&lock);
-	libercat_post_send(trans, data, mr, libercat_wait_callback, &lock);
+	ret = libercat_post_send(trans, data, mr, libercat_wait_callback, &lock);
 
-	pthread_mutex_lock(&lock);
-	pthread_mutex_unlock(&lock);
-	pthread_mutex_destroy(&lock);
-	return 0;
+	if (!ret) {
+		pthread_mutex_lock(&lock);
+		pthread_mutex_unlock(&lock);
+		pthread_mutex_destroy(&lock);
+	}
+
+	return ret;
 }
 
 // callbacks would all be run in a big send/recv_thread

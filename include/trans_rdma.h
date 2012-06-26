@@ -176,7 +176,7 @@ int libercat_read_request(trans, libercat_rloc, size); // = ask for rdma_read se
 struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access);
 int libercat_dereg_mr(struct ibv_mr *mr);
 
-libercat_rloc_t *libercat_make_rkey(uint64_t addr, struct ibv_mr *mr, uint32_t size);
+libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t size);
 
 
 int libercat_init(libercat_trans_t **trans, libercat_trans_attr_t *attr);
