@@ -656,7 +656,7 @@ int libercat_accept(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it //FIXME still not safe for concurrent connection requests
+ * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it //FIXME it is now safe for concurrent connection request because we don't wait for connection established message anymore. Is that bad? (check if it should happen between rdma_accept and first send post)
  *
  * @param rdma_connection [IN] the mother trans
  *
