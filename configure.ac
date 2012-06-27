@@ -1,6 +1,9 @@
-AC_INIT([libercat], [1.0], [dominique.martinet.ocre@cea.fr])
+AC_INIT([libercat], [0.1], [dominique.martinet.ocre@cea.fr])
 AM_INIT_AUTOMAKE([-Wall -Werror])
 
+AC_CONFIG_MACRO_DIR([m4])
+
+AC_GNU_SOURCE
 AC_PROG_CC
 AC_PROG_LIBTOOL
 
@@ -12,7 +15,27 @@ AC_SEARCH_LIBS([rdma_create_id], [rdmacm], [], [
 	AC_MSG_ERROR([unable to find librdmacm])
 ])
 
+AC_DEFINE( [VERSION_COMMENT], ["libercat and rcat example"], [No Comment])
 
-AC_CONFIG_HEADERS([config.h])
+# Git latest commit
+AC_MSG_CHECKING( [Git HEAD] )
+head_commit=`git rev-parse HEAD 2>/dev/null`
+
+if test "x$head_commit" == "x" ; then
+  AC_MSG_RESULT( [no git here] ) 
+  AC_DEFINE_UNQUOTED( [_GIT_HEAD_COMMIT], "not compiled within a git repository", [Lastest HEAD at the time configure was run])
+  AC_MSG_CHECKING( [Git describe] )
+  AC_DEFINE_UNQUOTED( [_GIT_DESCRIBE], "not compiled within a git repository", [Result of git-describe --long])
+else
+  AC_MSG_RESULT( $head_commit ) 
+  AC_DEFINE_UNQUOTED( [_GIT_HEAD_COMMIT], "$head_commit", [Lastest HEAD at the time configure was run])
+  AC_MSG_CHECKING( [Git describe] )
+  git_describe=`git describe --long`
+  AC_MSG_RESULT( $git_describe ) 
+  AC_DEFINE_UNQUOTED( [_GIT_DESCRIBE], "$git_describe", [Result of git-describe --long])
+fi
+
+
+AC_CONFIG_HEADERS([include/config.h])
 AC_CONFIG_FILES([Makefile src/Makefile rpm/Makefile])
 AC_OUTPUT

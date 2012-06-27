@@ -9,7 +9,7 @@ Source: %{name}-%{version}.tar.gz
 BuildRoot: /tmp/%{name}-buildroot
 Prefix: %{_prefix}
 Requires: librdmacm, libibverbs
-BuildRequires: librdmacm-devel, libibverbs-devel, gcc
+BuildRequires: librdmacm-devel, libibverbs-devel, gcc, automake, libtool
 
 %package devel
 Group: Application/Devel

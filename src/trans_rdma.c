@@ -44,7 +44,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "../include/trans_rdma.h"
+#include "trans_rdma.h"
 
 /* UTILITY FUNCTIONS */
 
@@ -425,6 +425,7 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	}
 	trans->addr = attr->addr;
 
+	trans->server = attr->server;
 	trans->timeout = attr->timeout ?: 3000000; // in ms
 	trans->sq_depth = attr->sq_depth ?: 10;
 	trans->rq_depth = attr->rq_depth ?: 50;
