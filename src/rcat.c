@@ -1,23 +1,20 @@
 
+#include "config.h"
+
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <stdio.h>	//printf
 #include <stdlib.h>	//malloc
 #include <string.h>	//memcpy
 #include <unistd.h>	//read
-
-#if 0
-#include <sys/socket.h> //sockaddr
-#include <inttypes.h>	//uint*_t
-#include <errno.h>	//ENOMEM
-#include <pthread.h>	//pthread_* (think it's included by another one)
-#endif 
+#include <getopt.h>
+#include <errno.h>
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "../include/trans_rdma.h"
+#include "trans_rdma.h"
 
 #define CHUNK_SIZE 512
 #define RECV_NUM 3
@@ -56,6 +53,10 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 	}
 }
 
+void print_help(char **argv) {
+	printf("Usage: %s {-s|-c addr}\n", argv[0]);
+}
+
 int main(int argc, char **argv) {
 
 
@@ -69,12 +70,61 @@ int main(int argc, char **argv) {
 
 	memset(&attr, 0, sizeof(libercat_trans_attr_t));
 
+	attr.server = -1; // put an incorrect value to check if we're either client or server
+	// sane values for optional or non-configurable elements
 	attr.rq_depth = RECV_NUM+2;
-
 	((struct sockaddr_in*) &attr.addr)->sin_family = AF_INET;
 	((struct sockaddr_in*) &attr.addr)->sin_port = htons(1235);
-	inet_pton(AF_INET, "10.0.2.22", &((struct sockaddr_in*) &attr.addr)->sin_addr);
 
+	// argument handling
+	static struct option long_options[] = {
+		{ "client",	required_argument,	0,		'c' },
+		{ "server",	required_argument,	0,		's' },
+		{ "port",	required_argument,	0,		'p' },
+		{ "help",	no_argument,		0,		'h' },
+		{ 0,		0,			0,		 0  }
+	};
+
+	int option_index = 0;
+	int op;
+	while ((op = getopt_long(argc, argv, "@hvsc:p:", long_options, &option_index)) != -1) {
+		switch(op) {
+			case '@':
+				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
+				printf("Release = %s\n", VERSION);
+				printf("Release comment = %s\n", VERSION_COMMENT);
+				printf("Git HEAD = %s\n", _GIT_HEAD_COMMIT ) ;
+				printf("Git Describe = %s\n", _GIT_DESCRIBE ) ;
+				exit(0);
+			case 'h':
+				print_help(argv);
+				exit(0);
+			case 'v':
+				ERROR_LOG("verbose switch not ready just yet, come back later!\n");
+				break;
+			case 'c':
+				attr.server = 0;
+				inet_pton(AF_INET, optarg, &((struct sockaddr_in*) &attr.addr)->sin_addr);
+				break;
+			case 's':
+				attr.server = 1;
+				inet_pton(AF_INET, "0.0.0.0", &((struct sockaddr_in*) &attr.addr)->sin_addr);
+				break;
+			case 'p':
+				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));
+				break;
+			default:
+				ERROR_LOG("Failed to parse arguments");
+				print_help(argv);
+				exit(EINVAL);
+		}
+	}
+
+	if (attr.server == -1) {
+		ERROR_LOG("must be either a client or a server!");
+		print_help(argv);
+		exit(EINVAL);
+	}
 
 	TEST_Z(libercat_init(&trans, &attr));
 
@@ -82,12 +132,12 @@ int main(int argc, char **argv) {
 		exit(-1);
 
 
-	if (argc == 1) { //client, no argument
-		TEST_Z(libercat_connect(trans));
-	} else { // server
+	if (trans->server) {
 		TEST_Z(libercat_bind_server(trans));
 		trans = libercat_accept_one(trans);
 		//TODO split accept_one in two and post receive requests before the final rdma_accept call
+	} else { //client
+		TEST_Z(libercat_connect(trans));
 	}
 
 	TEST_NZ(rdmabuf = malloc((RECV_NUM+2)*CHUNK_SIZE*sizeof(char)));

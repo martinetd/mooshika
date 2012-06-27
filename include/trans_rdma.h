@@ -112,6 +112,7 @@ struct libercat_trans {
 };
 
 struct libercat_trans_attr {
+	int server;
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
