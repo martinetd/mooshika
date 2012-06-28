@@ -249,6 +249,10 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 		case IBV_WC_RECV:
 			INFO_LOG("WC_RECV");
 
+			if (wc.wc_flags & IBV_WC_WITH_IMM) {
+				ERROR_LOG("imm_data: %d", ntohl(wc.imm_data));
+			}
+
 			ctx = (libercat_ctx_t *)wc.wr_id;
 			ctx->data->size = wc.byte_len;
 			if (ctx->callback)
@@ -908,10 +912,11 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 	wctx->sge.lkey = mr->lkey;
 	wctx->wr.wwr.next = NULL;
 	wctx->wr.wwr.wr_id = (uint64_t)wctx;
-	wctx->wr.wwr.opcode = IBV_WR_SEND;
+	wctx->wr.wwr.opcode = IBV_WR_SEND; // _WITH_IMM
 	wctx->wr.wwr.send_flags = IBV_SEND_SIGNALED;
 	wctx->wr.wwr.sg_list = &wctx->sge;
 	wctx->wr.wwr.num_sge = 1;
+//	wctx->wr.wwr.imm_data = htonl(42);
 
 	ret = ibv_post_send(trans->qp, &wctx->wr.wwr, &trans->bad_send_wr);
 	if (ret) {
