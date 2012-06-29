@@ -21,8 +21,8 @@
  */
 
 /**
- * \file    trans_rdma.h
- * \brief   rdma helper include file
+ * \file	trans_rdma.h
+ * \brief	rdma helper include file
  *
  * This is (very) loosely based on a mix of diod, rping (librdmacm/examples)
  * and kernel's net/9p/trans_rdma.c
@@ -97,14 +97,11 @@ struct libercat_trans {
 	pthread_t cq_thread;		/**< Thread id for completion queue handler */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
-	struct ibv_mr *send_mr;		/**< send DMA Memory Region pointer */
 	int rq_depth;			/**< The depth of the Receive Queue. */
-	struct ibv_mr *recv_mr;		/**< receive DMA Memory Region pointer */
 	struct sockaddr_storage addr;	/**< The remote peer's address */
-	int server;
-	int num_accept;
-	libercat_ctx_t *send_buf;		/**< pointer to actual context data */
-	libercat_ctx_t *recv_buf;		/**< pointer to actual context data */
+	int server;			/**< 0 if client, number of connections to accept on server */
+	libercat_ctx_t *send_buf;	/**< pointer to actual context data */
+	libercat_ctx_t *recv_buf;	/**< pointer to actual context data */
 	pthread_mutex_t lock;		/**< lock for events */
 	pthread_cond_t cond;		/**< cond for events */
 	struct ibv_recv_wr *bad_recv_wr;
@@ -112,12 +109,11 @@ struct libercat_trans {
 };
 
 struct libercat_trans_attr {
-	int server;
+	int server;			/**< 0 if client, number of connections to accept on server */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
 	struct sockaddr_storage addr;	/**< The remote peer's address */
-	int num_accept;
 };
 
 

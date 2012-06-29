@@ -430,10 +430,9 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	trans->addr = attr->addr;
 
 	trans->server = attr->server;
-	trans->timeout = attr->timeout ?: 3000000; // in ms
-	trans->sq_depth = attr->sq_depth ?: 10;
-	trans->rq_depth = attr->rq_depth ?: 50;
-	trans->num_accept = attr->num_accept ?: 10;
+	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
+	trans->sq_depth = attr->sq_depth ? attr->sq_depth : 10;
+	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
 
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
@@ -575,7 +574,10 @@ int libercat_bind_server(libercat_trans_t *trans) {
 		return EINVAL;
 	}
 
-	trans->server = 1;
+	if (trans->server <= 0) {
+		ERROR_LOG("Must be on server side to call this function");
+		return EINVAL;
+	}
 
 
 	char str[INET_ADDRSTRLEN];
@@ -590,7 +592,7 @@ int libercat_bind_server(libercat_trans_t *trans) {
 		return ret;
 	}
 
-	ret = rdma_listen(trans->cm_id, trans->num_accept);
+	ret = rdma_listen(trans->cm_id, trans->server);
 	if (ret) {
 		ret = errno;
 		ERROR_LOG("rdma_listen failed: %s (%d)", strerror(ret), ret);
@@ -796,7 +798,10 @@ int libercat_connect(libercat_trans_t *trans) {
 		return EINVAL;
 	}
 
-	trans->server = 0;
+	if (trans->server) {
+		ERROR_LOG("Must be on client side to call this function");
+		return EINVAL;
+	}
 
 	pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
 

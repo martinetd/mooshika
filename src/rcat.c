@@ -107,7 +107,7 @@ int main(int argc, char **argv) {
 				inet_pton(AF_INET, optarg, &((struct sockaddr_in*) &attr.addr)->sin_addr);
 				break;
 			case 's':
-				attr.server = 1;
+				attr.server = 10;
 				inet_pton(AF_INET, "0.0.0.0", &((struct sockaddr_in*) &attr.addr)->sin_addr);
 				break;
 			case 'p':
