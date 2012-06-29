@@ -135,7 +135,6 @@ int main(int argc, char **argv) {
 	if (trans->server) {
 		TEST_Z(libercat_bind_server(trans));
 		trans = libercat_accept_one(trans);
-		//TODO split accept_one in two and post receive requests before the final rdma_accept call
 	} else { //client
 		TEST_Z(libercat_connect(trans));
 	}
@@ -178,7 +177,9 @@ int main(int argc, char **argv) {
 	}
 	
 	if (trans->server) {
-//		TEST_Z(libercat_accept(trans));
+		TEST_Z(libercat_finalize_accept(trans));
+	} else {
+		TEST_Z(libercat_finalize_connect(trans));
 	}
 
 	TEST_NZ(wdata = malloc(sizeof(libercat_data_t)));
