@@ -101,7 +101,7 @@ libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t s
 /* INIT/SHUTDOWN FUNCTIONS */
 
 /**
- * libercat_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone) //FIXME: should we destroy trans on disconnect? that would be evil...
+ * libercat_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone)
  *
  */
 static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
@@ -641,7 +641,7 @@ static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct r
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_accept(libercat_trans_t *trans) {
+int libercat_finalize_accept(libercat_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
@@ -658,11 +658,21 @@ int libercat_accept(libercat_trans_t *trans) {
 		return ret;
 	}
 
+
+	pthread_cond_wait(&trans->cond, &trans->lock);
+	pthread_mutex_unlock(&trans->lock);
+
+	if (trans->state != LIBERCAT_CONNECTED) {
+		ERROR_LOG("state isn't what was expected");
+		return ECONNABORTED;
+	}	
+
 	return 0;
 }
 
+
 /**
- * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it //FIXME it is now safe for concurrent connection request because we don't wait for connection established message anymore. Is that bad? (check if it should happen between rdma_accept and first send post)
+ * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it
  *
  * @param rdma_connection [IN] the mother trans
  *
@@ -711,7 +721,6 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 		libercat_setup_buffer(trans);
 		pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
 		pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
-		libercat_accept(trans);
 	}
 	return trans;
 }
@@ -743,7 +752,7 @@ static int libercat_bind_client(libercat_trans_t *trans) {
  * libercat_connect_client: does the actual connection to the server //FIXME: do we want to remove the static to allow for post_recv before connecting?
  *
  */
-static int libercat_connect_client(libercat_trans_t *trans) {
+int libercat_finalize_connect(libercat_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
@@ -796,7 +805,6 @@ int libercat_connect(libercat_trans_t *trans) {
 	libercat_setup_buffer(trans);
 
 	pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
-	libercat_connect_client(trans);
 
 	return 0;
 }

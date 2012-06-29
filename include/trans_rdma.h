@@ -184,14 +184,14 @@ int libercat_init(libercat_trans_t **trans, libercat_trans_attr_t *attr);
 
 // server specific:
 int libercat_bind_server(libercat_trans_t *trans);
-int libercat_accept(libercat_trans_t *trans);
 libercat_trans_t *libercat_accept_one(libercat_trans_t *trans);
+int libercat_finalize_accept(libercat_trans_t *trans);
 void libercat_destroy_trans(libercat_trans_t *libercat_trans);
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client
 int libercat_connect(libercat_trans_t *trans);
-
+int libercat_finalize_connect(libercat_trans_t *trans);
 
 
 
