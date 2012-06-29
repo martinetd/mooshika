@@ -17,5 +17,9 @@ rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS:
 
 rpmdirs: rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS
 
+clean-local:
+	rm -rf doxygen
+
 doc:
 	doxygen ./doxygen.conf
+	cd doxygen/latex; make pdf
