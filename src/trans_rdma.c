@@ -218,7 +218,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 	libercat_ctx_t* ctx;
 	int ret;
 
-	if ((ret = ibv_poll_cq(trans->cq, 1, &wc)) == 1) {
+	while ((ret = ibv_poll_cq(trans->cq, 1, &wc)) == 1) {
 		ret = 0;
 
 		if (trans->bad_recv_wr) {
@@ -650,6 +650,7 @@ int libercat_accept(libercat_trans_t *trans) {
 	conn_param.initiator_depth = 1;
 	conn_param.private_data = NULL;
 	conn_param.private_data_len = 0;
+	conn_param.rnr_retry_count = 10;
 	ret = rdma_accept(trans->cm_id, &conn_param);
 	if (ret) {
 		ret = errno;
@@ -749,6 +750,7 @@ static int libercat_connect_client(libercat_trans_t *trans) {
 	memset(&conn_param, 0, sizeof(struct rdma_conn_param));
 	conn_param.responder_resources = 1;
 	conn_param.initiator_depth = 1;
+	conn_param.rnr_retry_count = 10;
 	conn_param.retry_count = 10;
 
 	pthread_mutex_lock(&trans->lock);
