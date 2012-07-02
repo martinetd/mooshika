@@ -121,27 +121,6 @@ typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
 
 
 /**
- * \struct libercat_ctx
- * Context data we can use during recv/send callbacks
- */
-struct libercat_ctx {
-	int used;			/**< 0 if we can use it for a new recv/send */
-	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
-	uint32_t len;			/**< size of our own buffer */
-	struct rdmactx *next;		/**< next context */
-	libercat_data_t *data;
-	ctx_callback_t callback;
-	struct ibv_sge sge;
-	union {
-		struct ibv_recv_wr rwr;
-		struct ibv_send_wr wwr;
-	} wr;
-	void *callback_arg;
-};
-
-
-
-/**
  * \struct libercat_rloc
  * stores one remote address to write/read at
  */
