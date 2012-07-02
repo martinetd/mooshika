@@ -876,7 +876,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 	rctx->len = (*pdata)->max_size;
 	rctx->pos = 0;
 	rctx->next = NULL;
-	rctx->callback = (void *)callback;
+	rctx->callback = callback;
 	rctx->callback_arg = callback_arg;
 	rctx->data = *pdata;
 
@@ -936,7 +936,7 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 	wctx->len = data->size;
 	wctx->pos = 0;
 	wctx->next = NULL;
-	wctx->callback = (void *)callback;
+	wctx->callback = callback;
 	wctx->callback_arg = callback_arg;
 	wctx->data = data;
 
