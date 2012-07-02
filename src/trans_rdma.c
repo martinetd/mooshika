@@ -60,7 +60,7 @@
  */
 
 struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
-	return ibv_reg_mr(trans->pd, memaddr, size, access); // todo: mr->context = trans;
+	return ibv_reg_mr(trans->pd, memaddr, size, access);
 }
 
 /**
