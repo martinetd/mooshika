@@ -126,7 +126,6 @@ typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
  */
 struct libercat_ctx {
 	int used;			/**< 0 if we can use it for a new recv/send */
-	enum ibv_wc_opcode wc_op;	/**< IBV_WC_SEND or IBV_WC_RECV */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
 	uint32_t len;			/**< size of our own buffer */
 	struct rdmactx *next;		/**< next context */
