@@ -40,11 +40,57 @@
 #include <arpa/inet.h>  //inet_ntop
 #include <netinet/in.h> //sock_addr_in
 
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
 #include "trans_rdma.h"
+
+#define SHM_KEY 4213
+#define SHM_SIZE 1024*1024
+#define SHM_SEM_KEY 4241
+#define SERVER_SEND_SEM_KEY 4242
+#define CLIENT_SEND_SEM_KEY 4243
+#define RECV_SEM 0
+#define SEND_SEM 1
+#define SHM_SEM 2
+
+struct libercat_ctx {
+	int used;
+	libercat_data_t *data;
+	ctx_callback_t callback;
+	void *callback_arg;
+};
+
+typedef struct libercat_list libercat_list_t;
+typedef struct libercat_shm libercat_shm_t;
+typedef struct libercat_sem libercat_sem_t;
+
+struct libercat_list {
+	libercat_ctx_t *ctx;
+	libercat_list_t *next;
+};
+
+struct libercat_shm {
+	int shmid;
+	key_t shmkey;
+	uint32_t len;
+	libercat_data_t *shm;
+	key_t semkey;
+	int semid;
+};
+
+struct libercat_sem {
+	key_t semkey;
+	int semid;
+	libercat_list_t *ctx_head;
+	libercat_list_t *ctx_last;
+};
+
 
 /* UTILITY FUNCTIONS */
 
@@ -60,7 +106,6 @@
  */
 
 struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
-	int i;
 	struct ibv_mr *mr;
 	mr = malloc(sizeof(struct ibv_mr));
 	if (!mr) {
@@ -109,13 +154,134 @@ libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t s
 	return rkey;
 }
 
+/**
+ * libercat_semop
+ *
+ * does the op on send sem if send, recv sem otherwise
+ */
+static int libercat_semop(libercat_trans_t *trans, short send, short op) {
+	struct sembuf sops;
+	sops.sem_num = 0;
+	sops.sem_flg = 0;
+	sops.sem_op = op;
+	if (send == SEND_SEM)
+		return semop(((libercat_sem_t *)trans->qp->send_cq->cq_context)->semid, &sops, 1);
+	else if (send == RECV_SEM)
+		return semop(((libercat_sem_t *)trans->qp->recv_cq->cq_context)->semid, &sops, 1);
+	else if (send == SHM_SEM)
+		return semop(((libercat_sem_t *)trans->qp->qp_context)->semid, &sops, 1);
+	else
+		return EINVAL;
+}
+
 /* INIT/SHUTDOWN FUNCTIONS */
+
+static void *libercat_send_thread(void *arg) {
+	libercat_trans_t *trans = arg;
+	if (!trans || !trans->qp || !trans->qp->send_cq || !trans->qp->send_cq->cq_context || !trans->qp->qp_context) {
+		ERROR_LOG("cant start without everything init");
+		pthread_exit(NULL);
+	}
+
+	libercat_sem_t *sem = trans->qp->send_cq->cq_context;
+	libercat_shm_t *shm = trans->qp->qp_context;
+	libercat_ctx_t *ctx;
+
+	pthread_mutex_lock(&trans->lock);
+	while (1) {
+		pthread_cond_wait(&trans->cond, &trans->lock);
+		if (sem->ctx_head) {
+			ctx = sem->ctx_head->ctx;
+			libercat_semop(trans, SHM_SEM, -1);
+			shm->shm->size = ctx->data->size;
+			memcpy(&shm->shm->data, ctx->data->data, ctx->data->size);
+			libercat_semop(trans, SHM_SEM, 1);
+			libercat_semop(trans, SEND_SEM, 1);
+			if (ctx->callback)
+				ctx->callback(trans, ctx->callback_arg);
+			free(sem->ctx_head);
+			sem->ctx_head = sem->ctx_head->next;
+			if (!sem->ctx_head)
+				sem->ctx_last = NULL;
+			ctx->used = 0;
+			pthread_cond_broadcast(&trans->cond);
+		}
+	}
+}
+
+static void *libercat_recv_thread(void *arg) {
+	libercat_trans_t *trans = arg;
+	if (!trans || !trans->qp || !trans->qp->recv_cq || !trans->qp->recv_cq->cq_context || !trans->qp->qp_context) {
+		ERROR_LOG("cant start without everything init");
+		pthread_exit(NULL);
+	}
+
+	libercat_sem_t *sem = trans->qp->recv_cq->cq_context;
+	libercat_shm_t *shm = trans->qp->qp_context;
+	libercat_ctx_t *ctx;
+
+	while (1) {
+		libercat_semop(trans, RECV_SEM, -1);
+		if (sem->ctx_head) {
+			ctx = sem->ctx_head->ctx;
+			libercat_semop(trans, SHM_SEM, -1);
+			ctx->data->size = shm->shm->size;
+			memcpy(ctx->data->data, &shm->shm->data, ctx->data->size);
+			libercat_semop(trans, SHM_SEM, 1);
+			if (ctx->callback)
+				ctx->callback(trans, ctx->callback_arg);
+			free(sem->ctx_head);
+			sem->ctx_head = sem->ctx_head->next;
+			if (!sem->ctx_head)
+				sem->ctx_last = NULL;
+			ctx->used = 0;
+			pthread_mutex_lock(&trans->lock);
+			pthread_cond_broadcast(&trans->cond);
+			pthread_mutex_unlock(&trans->lock);
+		}
+	}
+}
+
+
+/**
+ * libercat_destroy_buffer
+ *
+ */
+static void libercat_destroy_buffer(libercat_trans_t *trans) {
+	if (trans->send_buf)
+		free(trans->send_buf);
+
+	if (trans->recv_buf)
+		free(trans->recv_buf);
+
+	if (trans->qp->send_cq->cq_context) {
+		semctl(((libercat_sem_t *)trans->qp->send_cq->cq_context)->semid, 0, IPC_RMID);
+		free(trans->qp->send_cq->cq_context);
+	}
+	if (trans->qp->send_cq)
+		free(trans->qp->send_cq);
+	if (trans->qp->recv_cq->cq_context) {
+		semctl(((libercat_sem_t *)trans->qp->recv_cq->cq_context)->semid, 0, IPC_RMID);
+		free(trans->qp->recv_cq->cq_context);
+	}
+	if (trans->qp->qp_context) {
+		shmctl(((libercat_shm_t *)trans->qp->qp_context)->shmid, IPC_RMID, NULL);
+		free(trans->qp->qp_context);
+	}
+	if (trans->qp)
+		free(trans->qp);
+
+}
+
+
 /**
  * libercat_destroy_trans: disconnects and free trans data
  *
  * @param trans [INOUT] the trans to destroy
  */
 void libercat_destroy_trans(libercat_trans_t *trans) {
+
+	libercat_destroy_buffer(trans);
 
 	pthread_mutex_destroy(&trans->lock);
 	pthread_cond_destroy(&trans->cond);
@@ -149,9 +315,9 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	trans->state = LIBERCAT_INIT;
 
 	trans->server = attr->server;
-	trans->timeout = attr->timeout ?: 3000000; // in ms
-	trans->sq_depth = attr->sq_depth ?: 10;
-	trans->rq_depth = attr->rq_depth ?: 50;
+	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
+	trans->sq_depth = attr->sq_depth ? attr->sq_depth : 5;
+	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 5;
 
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
@@ -170,10 +336,16 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 }
 
 
+
+
 /**
  * libercat_setup_buffer
  */
 static int libercat_setup_buffer(libercat_trans_t *trans) {
+	int ret;
+	libercat_shm_t *shm;
+	libercat_sem_t *sem;
+
 	trans->recv_buf = malloc(trans->rq_depth * sizeof(libercat_ctx_t));
 	if (!trans->recv_buf) {
 		ERROR_LOG("couldn't malloc trans->recv_buf");
@@ -184,9 +356,96 @@ static int libercat_setup_buffer(libercat_trans_t *trans) {
 	trans->send_buf = malloc(trans->sq_depth * sizeof(libercat_ctx_t));
 	if (!trans->send_buf) {
 		ERROR_LOG("couldn't malloc trans->send_buf");
+		libercat_destroy_buffer(trans);
 		return ENOMEM;
 	}
 	memset(trans->send_buf, 0, trans->sq_depth * sizeof(libercat_ctx_t));
+
+
+	trans->qp = malloc(sizeof(struct ibv_qp));
+	if (!trans->qp) {
+		ERROR_LOG("couldn't malloc trans->qp");
+		libercat_destroy_buffer(trans);
+		return ENOMEM;
+	}
+
+	trans->qp->qp_context = malloc(sizeof(libercat_shm_t));
+	if (!trans->qp->qp_context) {
+		ERROR_LOG("couldn't malloc trans->qp->qp_context");
+		libercat_destroy_buffer(trans);
+		return ENOMEM;
+	}
+
+	shm = trans->qp->qp_context;
+
+	shm->len = SHM_SIZE;
+	shm->shmkey = SHM_KEY;
+	shm->shmid = shmget(shm->shmkey, SHM_SIZE, 0666 | IPC_CREAT);
+	if (shm->shmid == -1) {
+		ret = errno;
+		ERROR_LOG("shmget failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+	shm->shm = shmat(shm->shmid, NULL, 0);
+	if (shm->shm == (void *)-1) {
+		ret = errno;
+		ERROR_LOG("shmat failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	shm->semkey = SHM_SEM_KEY;
+	shm->semid = semget(shm->semkey, 1, 0666 | IPC_CREAT);
+	if (!shm->semid) {
+		ret = errno;
+		ERROR_LOG("semget failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	trans->qp->send_cq = malloc(sizeof(struct ibv_cq)); 
+	if (!trans->qp->send_cq) {
+		ERROR_LOG("couldn't malloc trans->qp->send_cq");
+		libercat_destroy_buffer(trans);
+		return ENOMEM;
+	}
+	
+	trans->qp->send_cq->cq_context = malloc(sizeof(libercat_sem_t));
+	if (!trans->qp->send_cq->cq_context) {
+		ERROR_LOG("couldn't malloc trans->qp->send_cq->cq_context");
+		libercat_destroy_buffer(trans);
+		return ENOMEM;
+	}
+
+	sem = trans->qp->send_cq->cq_context;
+	sem->semkey = trans->server ? SERVER_SEND_SEM_KEY : CLIENT_SEND_SEM_KEY;
+	sem->semid = semget(sem->semkey, 1, 0666 | IPC_CREAT);
+	if (!sem->semid) {
+		ret = errno;
+		ERROR_LOG("semget failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	trans->qp->recv_cq = malloc(sizeof(struct ibv_cq)); 
+	if (!trans->qp->recv_cq) {
+		ERROR_LOG("couldn't malloc trans->qp->recv_cq");
+		libercat_destroy_buffer(trans);
+		return ENOMEM;
+	}
+
+	trans->qp->recv_cq->cq_context = malloc(sizeof(libercat_sem_t));
+	if (!trans->qp->recv_cq->cq_context) {
+		ERROR_LOG("couldn't malloc trans->qp->recv_cq->cq_context");
+		libercat_destroy_buffer(trans);
+		return ENOMEM;
+	}
+
+	sem = trans->qp->recv_cq->cq_context;
+	sem->semkey = trans->server ? CLIENT_SEND_SEM_KEY : SERVER_SEND_SEM_KEY;
+	sem->semid = semget(sem->semkey, 1, 0666 | IPC_CREAT);
+	if (!sem->semid) {
+		ret = errno;
+		ERROR_LOG("semget failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -213,6 +472,9 @@ int libercat_bind_server(libercat_trans_t *trans) {
  * @return 0 on success, the value of errno on error
  */
 int libercat_finalize_accept(libercat_trans_t *trans) {
+	libercat_semop(trans, SHM_SEM, -1);
+	libercat_semop(trans, SHM_SEM, 0);
+	libercat_semop(trans, SHM_SEM, 1);
 
 	return 0;
 }
@@ -224,14 +486,35 @@ int libercat_finalize_accept(libercat_trans_t *trans) {
  *
  * @return a new trans for the child on success, NULL on failure
  */
-int libercat_accept_one(libercat_trans_t *trans) {
-	return 0;
+libercat_trans_t *libercat_accept_one(libercat_trans_t *trans) {
+	int ret;
+
+	if (!trans) {
+		ERROR_LOG("trans must be initialized first!");
+		return NULL;
+	}
+
+	ret = libercat_setup_buffer(trans);
+	if (ret) {
+		ERROR_LOG("libercat setup buffer failed: %d", ret);
+		return NULL;
+	}
+
+	pthread_create(&trans->cq_thread, NULL, libercat_send_thread, trans);
+	pthread_create(&trans->cm_thread, NULL, libercat_recv_thread, trans);
+
+	libercat_semop(trans, SHM_SEM, 1);
+	return trans;
 }
+
 /**
  * libercat_connect_client: does the actual connection to the server
  *
  */
 int libercat_finalize_connect(libercat_trans_t *trans) {
+	libercat_semop(trans, SHM_SEM, -1);
+	libercat_semop(trans, SHM_SEM, 0);
+
 	return 0;
 }
 
@@ -243,11 +526,22 @@ int libercat_finalize_connect(libercat_trans_t *trans) {
  * @return 0 on success, the value of errno on error 
  */
 int libercat_connect(libercat_trans_t *trans) {
+	int ret;
 
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
 		return EINVAL;
 	}
+
+	ret = libercat_setup_buffer(trans);
+	if (ret) {
+		ERROR_LOG("libercat setup buffer failed: %d", ret);
+		return ret;
+	}
+
+	pthread_create(&trans->cq_thread, NULL, libercat_send_thread, trans);
+	pthread_create(&trans->cm_thread, NULL, libercat_recv_thread, trans);
+	libercat_semop(trans, SHM_SEM, 1);
 
 	return 0;
 }
@@ -267,6 +561,48 @@ int libercat_connect(libercat_trans_t *trans) {
  * @return 0 on success, the value of errno on error
  */
 int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+	libercat_ctx_t *rctx;
+	libercat_sem_t *sem;
+	libercat_list_t *elem;
+	int i;
+
+	pthread_mutex_lock(&trans->lock);
+
+	do {
+		for (i = 0, rctx = trans->recv_buf;
+		     i < trans->rq_depth;
+		     i++, rctx++)
+			if (!rctx->used)
+				break;
+
+		if (i == trans->rq_depth) {
+			INFO_LOG("Waiting for cond");
+			pthread_cond_wait(&trans->cond, &trans->lock);
+		}
+
+	} while ( i == trans->rq_depth );
+	INFO_LOG("got a free context");
+
+
+	rctx->used = 1;
+	rctx->data = *pdata;
+	rctx->callback = callback;
+	rctx->callback_arg = callback_arg;
+
+	sem = trans->qp->recv_cq->cq_context;
+	elem = malloc(sizeof(libercat_list_t));
+	elem->ctx = rctx;
+	elem->next = NULL;
+
+	if (sem->ctx_last) {
+		sem->ctx_last->next = elem;
+	} else {
+		sem->ctx_head = elem;
+	}
+	sem->ctx_last = elem;
+
+	pthread_mutex_unlock(&trans->lock);
+
 	return 0;
 }
 
@@ -282,6 +618,49 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
  * @return 0 on success, the value of errno on error
  */
 int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+	libercat_ctx_t *wctx;
+	libercat_sem_t *sem;
+	libercat_list_t *elem;
+	int i;
+
+	pthread_mutex_lock(&trans->lock);
+
+	do {
+		for (i = 0, wctx = trans->send_buf;
+		     i < trans->sq_depth;
+		     i++, wctx++)
+			if (!wctx->used)
+				break;
+
+		if (i == trans->sq_depth) {
+			INFO_LOG("Waiting for cond");
+			pthread_cond_wait(&trans->cond, &trans->lock);
+		}
+
+	} while ( i == trans->sq_depth );
+	INFO_LOG("got a free context");
+
+
+	wctx->used = 1;
+	wctx->data = data;
+	wctx->callback = callback;
+	wctx->callback_arg = callback_arg;
+
+	sem = trans->qp->send_cq->cq_context;
+	elem = malloc(sizeof(libercat_list_t));
+	elem->ctx = wctx;
+	elem->next = NULL;
+
+	if (sem->ctx_last) {
+		sem->ctx_last->next = elem;
+	} else {
+		sem->ctx_head = elem;
+	}
+	sem->ctx_last = elem;
+
+	pthread_cond_broadcast(&trans->cond);
+	pthread_mutex_unlock(&trans->lock);
+
 
 	return 0;
 }
