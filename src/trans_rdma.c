@@ -852,7 +852,6 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 
 	pthread_mutex_unlock(&trans->lock);
 
-	rctx->wc_op = IBV_WC_RECV;
 	rctx->used = 1;
 	rctx->len = (*pdata)->max_size;
 	rctx->pos = 0;
@@ -913,7 +912,6 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 
 	pthread_mutex_unlock(&trans->lock);
 
-	wctx->wc_op = IBV_WC_SEND;
 	wctx->used = 1;
 	wctx->len = data->size;
 	wctx->pos = 0;
