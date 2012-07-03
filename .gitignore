@@ -1,6 +1,7 @@
 doxygen
 *.o
 *.lo
+*.la
 *~
 \#*\#
 rcat
