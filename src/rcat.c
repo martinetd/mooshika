@@ -9,6 +9,7 @@
 #include <unistd.h>	//read
 #include <getopt.h>
 #include <errno.h>
+#include <poll.h>
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
@@ -16,7 +17,7 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-#define CHUNK_SIZE 512
+#define CHUNK_SIZE 100*1024*1024
 #define RECV_NUM 3
 
 #define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
@@ -186,13 +187,14 @@ int main(int argc, char **argv) {
 	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE*sizeof(char);
 	wdata->max_size = CHUNK_SIZE*sizeof(char);
 
-	fd_set rfds;
-	FD_ZERO(&rfds);
-	FD_SET(0, &rfds);
+	struct pollfd pollfd_stdin;
+	pollfd_stdin.fd = 0; // stdin
+	pollfd_stdin.events = POLLIN | POLLPRI;
+	pollfd_stdin.revents = 0;
 
 	while (1) {
 
-		if (select(1, &rfds, NULL, NULL, NULL) == -1)
+		if (poll(&pollfd_stdin, 1, -1) == -1)
 			break;
 		wdata->size = read(0, (char*)wdata->data, wdata->max_size);
 		if (wdata->size == 0)
