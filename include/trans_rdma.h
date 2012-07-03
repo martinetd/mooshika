@@ -51,6 +51,7 @@ typedef struct libercat_trans_attr libercat_trans_attr_t;
 typedef struct libercat_ctx libercat_ctx_t;
 typedef struct libercat_rloc libercat_rloc_t;
 typedef enum libercat_op libercat_op_t;
+typedef union sockaddr_union sockaddr_union_t;
 
 enum libercat_op {
 	LIBERCAT_DATA = 0,
@@ -69,6 +70,13 @@ struct libercat_data {
 	uint32_t max_size; /**< size of the data field */
 	uint32_t size; /**< size of the data to actually send/read */
 	uint8_t *data; /**< opaque data */
+};
+
+union sockaddr_union {
+	struct sockaddr sa;
+	struct sockaddr_in sa_in;
+	struct sockaddr_in6 sa_int6;
+	struct sockaddr_storage sa_stor;
 };
 
 /**
@@ -98,7 +106,7 @@ struct libercat_trans {
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
-	struct sockaddr_storage addr;	/**< The remote peer's address */
+	sockaddr_union_t addr;		/**< The remote peer's address */
 	int server;			/**< 0 if client, number of connections to accept on server */
 	libercat_ctx_t *send_buf;	/**< pointer to actual context data */
 	libercat_ctx_t *recv_buf;	/**< pointer to actual context data */
@@ -113,7 +121,7 @@ struct libercat_trans_attr {
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
-	struct sockaddr_storage addr;	/**< The remote peer's address */
+	sockaddr_union_t addr;		/**< The remote peer's address */
 };
 
 
