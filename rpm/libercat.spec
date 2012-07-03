@@ -48,6 +48,7 @@ rm -rf %{buildroot}
 %files devel
 %{_includedir}/*
 %{_libdir}/*.a
+%{_libdir}/pkgconfig/*.pc
 
 %changelog
 
