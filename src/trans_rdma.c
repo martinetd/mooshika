@@ -741,8 +741,20 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 	if (trans) {
 		libercat_setup_qp(trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
 		libercat_setup_buffer(trans);
-		pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
-		pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
+		pthread_attr_t attr_thr;
+
+		/* Init for thread parameter (mostly for scheduling) */
+		if(pthread_attr_init(&attr_thr) != 0)
+			ERROR_LOG("can't init pthread's attributes");
+
+		if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+			ERROR_LOG("can't set pthread's scope");
+
+		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+			ERROR_LOG("can't set pthread's join state");
+
+		pthread_create(&trans->cm_thread, &attr_thr, libercat_cm_thread, trans);
+		pthread_create(&trans->cq_thread, &attr_thr, libercat_cq_thread, trans);
 	}
 	return trans;
 }
@@ -823,13 +835,25 @@ int libercat_connect(libercat_trans_t *trans) {
 		return EINVAL;
 	}
 
-	pthread_create(&trans->cm_thread, NULL, libercat_cm_thread, trans);
+	pthread_attr_t attr_thr;
+
+	/* Init for thread parameter (mostly for scheduling) */
+	if(pthread_attr_init(&attr_thr) != 0)
+		ERROR_LOG("can't init pthread's attributes");
+
+	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+		ERROR_LOG("can't set pthread's scope");
+
+	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+		ERROR_LOG("can't set pthread's join state");
+
+	pthread_create(&trans->cm_thread, &attr_thr, libercat_cm_thread, trans);
 
 	libercat_bind_client(trans);
 	libercat_setup_qp(trans);
 	libercat_setup_buffer(trans);
 
-	pthread_create(&trans->cq_thread, NULL, libercat_cq_thread, trans);
+	pthread_create(&trans->cq_thread, &attr_thr, libercat_cq_thread, trans);
 
 	return 0;
 }

@@ -499,9 +499,21 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *trans) {
 		return NULL;
 	}
 
+	pthread_attr_t attr_thr;
+
+	/* Init for thread parameter (mostly for scheduling) */
+	if(pthread_attr_init(&attr_thr) != 0)
+		ERROR_LOG("can't init pthread's attributes");
+
+	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+		ERROR_LOG("can't set pthread's scope");
+
+	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+		ERROR_LOG("can't set pthread's join state");
+
 	pthread_mutex_lock(&trans->lock); // lock will be unlocked on cond_wait when recv_thread is ready
-	pthread_create(&trans->cq_thread, NULL, libercat_send_thread, trans);
-	pthread_create(&trans->cm_thread, NULL, libercat_recv_thread, trans);
+	pthread_create(&trans->cq_thread, &attr_thr, libercat_send_thread, trans);
+	pthread_create(&trans->cm_thread, &attr_thr, libercat_recv_thread, trans);
 
 	libercat_semop(trans, SHM_SEM, 1);
 	return trans;
@@ -539,9 +551,21 @@ int libercat_connect(libercat_trans_t *trans) {
 		return ret;
 	}
 
+	pthread_attr_t attr_thr;
+
+	/* Init for thread parameter (mostly for scheduling) */
+	if(pthread_attr_init(&attr_thr) != 0)
+		ERROR_LOG("can't init pthread's attributes");
+
+	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+		ERROR_LOG("can't set pthread's scope");
+
+	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+		ERROR_LOG("can't set pthread's join state");
+
 	pthread_mutex_lock(&trans->lock); // lock will be unlocked on cond_wait when recv_thread is ready
-	pthread_create(&trans->cq_thread, NULL, libercat_send_thread, trans);
-	pthread_create(&trans->cm_thread, NULL, libercat_recv_thread, trans);
+	pthread_create(&trans->cq_thread, &attr_thr, libercat_send_thread, trans);
+	pthread_create(&trans->cm_thread, &attr_thr, libercat_recv_thread, trans);
 	libercat_semop(trans, SHM_SEM, 1);
 
 	return 0;
