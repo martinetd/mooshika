@@ -51,7 +51,7 @@
 #include "trans_rdma.h"
 
 #define SHM_KEY 4213
-#define SHM_SIZE 1024*1024
+#define SHM_SIZE 100*1024*1025
 #define SHM_SEM_KEY 4241
 #define SERVER_SEND_SEM_KEY 4242
 #define CLIENT_SEND_SEM_KEY 4243
@@ -187,9 +187,7 @@ static void *libercat_send_thread(void *arg) {
 	libercat_shm_t *shm = trans->qp->qp_context;
 	libercat_ctx_t *ctx;
 
-	pthread_mutex_lock(&trans->lock);
-	while (1) {
-		pthread_cond_wait(&trans->cond, &trans->lock);
+	while ( ! pthread_cond_wait(&trans->cond, &trans->lock)) {
 		if (sem->ctx_head) {
 			ctx = sem->ctx_head->ctx;
 			libercat_semop(trans, SHM_SEM, -1);
@@ -207,6 +205,7 @@ static void *libercat_send_thread(void *arg) {
 			pthread_cond_broadcast(&trans->cond);
 		}
 	}
+	pthread_exit(NULL);
 }
 
 static void *libercat_recv_thread(void *arg) {
@@ -220,8 +219,7 @@ static void *libercat_recv_thread(void *arg) {
 	libercat_shm_t *shm = trans->qp->qp_context;
 	libercat_ctx_t *ctx;
 
-	while (1) {
-		libercat_semop(trans, RECV_SEM, -1);
+	while (! libercat_semop(trans, RECV_SEM, -1)) {
 		if (sem->ctx_head) {
 			ctx = sem->ctx_head->ctx;
 			libercat_semop(trans, SHM_SEM, -1);
@@ -240,6 +238,7 @@ static void *libercat_recv_thread(void *arg) {
 			pthread_mutex_unlock(&trans->lock);
 		}
 	}
+	exit(0);
 }
 
 
@@ -500,6 +499,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *trans) {
 		return NULL;
 	}
 
+	pthread_mutex_lock(&trans->lock); // lock will be unlocked on cond_wait when recv_thread is ready
 	pthread_create(&trans->cq_thread, NULL, libercat_send_thread, trans);
 	pthread_create(&trans->cm_thread, NULL, libercat_recv_thread, trans);
 
@@ -539,6 +539,7 @@ int libercat_connect(libercat_trans_t *trans) {
 		return ret;
 	}
 
+	pthread_mutex_lock(&trans->lock); // lock will be unlocked on cond_wait when recv_thread is ready
 	pthread_create(&trans->cq_thread, NULL, libercat_send_thread, trans);
 	pthread_create(&trans->cm_thread, NULL, libercat_recv_thread, trans);
 	libercat_semop(trans, SHM_SEM, 1);
