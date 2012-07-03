@@ -443,11 +443,11 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 
 	trans->state = LIBERCAT_INIT;
 
-	if (!attr->addr.ss_family) { //FIXME: do a proper check?
+	if (!attr->addr.sa_stor.ss_family) { //FIXME: do a proper check?
 		ERROR_LOG("address has to be defined");
 		return EDESTADDRREQ;
 	}
-	trans->addr = attr->addr;
+	trans->addr.sa_stor = attr->addr.sa_stor;
 
 	trans->server = attr->server;
 	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
@@ -602,10 +602,10 @@ int libercat_bind_server(libercat_trans_t *trans) {
 
 	char str[INET_ADDRSTRLEN];
 
-	inet_ntop(AF_INET, &((struct sockaddr_in*)&trans->addr)->sin_addr, str, INET_ADDRSTRLEN);
-	INFO_LOG("addr: %s, port: %d", str, ntohs(((struct sockaddr_in*)&trans->addr)->sin_port));
+	inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
+	INFO_LOG("addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
 
-	ret = rdma_bind_addr(trans->cm_id, (struct sockaddr*) &trans->addr);
+	ret = rdma_bind_addr(trans->cm_id, &trans->addr.sa);
 	if (ret) {
 		ret = errno;
 
