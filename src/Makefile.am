@@ -2,7 +2,9 @@ AM_CFLAGS = -g -Wall -Werror
 
 lib_LTLIBRARIES = libercat.la libercat_shm.la
 libercat_la_SOURCES = trans_rdma.c
+libercat_la_LDFLAGS = -version-info 0:1:0
 libercat_shm_la_SOURCES = trans_shm.c
+libercat_shm_la_LDFLAGS = -version-info 0:1:0
 
 bin_PROGRAMS = rcat
 rcat_SOURCES = rcat.c
