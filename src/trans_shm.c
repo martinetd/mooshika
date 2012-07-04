@@ -239,6 +239,7 @@ static void *libercat_recv_thread(void *arg) {
 		}
 	}
 
+	trans->state = LIBERCAT_DISCONNECTED;
 	if (trans->disconnect_callback)
 		trans->disconnect_callback(trans);
 
