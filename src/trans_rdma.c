@@ -182,6 +182,8 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 
 	case RDMA_CM_EVENT_DISCONNECTED:
 		ERROR_LOG("DISCONNECT EVENT...");
+		if (trans->disconnect_callback)
+			trans->disconnect_callback(trans);
 		pthread_mutex_lock(&trans->lock);
 		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
@@ -453,6 +455,7 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
 	trans->sq_depth = attr->sq_depth ? attr->sq_depth : 10;
 	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
+	trans->disconnect_callback = attr->disconnect_callback;
 
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {

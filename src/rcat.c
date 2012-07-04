@@ -35,6 +35,11 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 
 }
 
+void callback_disconnect(libercat_trans_t *trans) {
+	libercat_destroy_trans(trans);
+	exit(0);
+}
+
 void callback_recv(libercat_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
 	libercat_data_t **pdata = datamr->data;
@@ -76,6 +81,7 @@ int main(int argc, char **argv) {
 	attr.rq_depth = RECV_NUM+2;
 	attr.addr.sa_in.sin_family = AF_INET;
 	attr.addr.sa_in.sin_port = htons(1235);
+	attr.disconnect_callback = callback_disconnect;
 
 	// argument handling
 	static struct option long_options[] = {
