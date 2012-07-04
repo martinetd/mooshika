@@ -137,7 +137,7 @@ typedef void (*ctx_callback_t)(libercat_trans_t *trans, void *arg);
  * stores one remote address to write/read at
  */
 struct libercat_rloc {
-	uint64_t rmemaddr; /**< remote address */
+	uint64_t raddr; /**< remote memory address */
 	uint32_t rkey; /**< remote key */
 	uint32_t size; /**< size of the region we can write/read */
 };
@@ -150,10 +150,13 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **datap, struct ibv_mr *mr);
 int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr);
 
-/*// server side
-int libercat_write(trans, libercat_rloc_t, size_t size);
-int libercat_read(trans, libercat_rloc_t, size_t size);
+// server side
+int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
+int libercat_post_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
+int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc);
+int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc);
 
+/*
 // client side
 int libercat_write_request(trans, libercat_rloc, size); // = ask for rdma_write server side ~= rdma_read
 int libercat_read_request(trans, libercat_rloc, size); // = ask for rdma_read server side ~= rdma_write
