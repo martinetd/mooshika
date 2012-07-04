@@ -238,7 +238,11 @@ static void *libercat_recv_thread(void *arg) {
 			pthread_mutex_unlock(&trans->lock);
 		}
 	}
-	exit(0);
+
+	if (trans->disconnect_callback)
+		trans->disconnect_callback(trans);
+
+	pthread_exit(NULL);
 }
 
 
@@ -317,6 +321,7 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
 	trans->sq_depth = attr->sq_depth ? attr->sq_depth : 5;
 	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 5;
+	trans->disconnect_callback = attr->disconnect_callback;
 
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {

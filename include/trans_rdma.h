@@ -79,6 +79,8 @@ union sockaddr_union {
 	struct sockaddr_storage sa_stor;
 };
 
+typedef void (*disconnect_callback_t) (libercat_trans_t *trans);
+
 /**
  * \struct libercat_trans
  * RDMA transport instance
@@ -103,6 +105,7 @@ struct libercat_trans {
 	struct ibv_qp *qp;		/**< Queue Pair pointer */
 	struct ibv_cq *cq;		/**< Completion Queue pointer */
 	pthread_t cq_thread;		/**< Thread id for completion queue handler */
+	disconnect_callback_t disconnect_callback;
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
@@ -117,6 +120,7 @@ struct libercat_trans {
 };
 
 struct libercat_trans_attr {
+	disconnect_callback_t disconnect_callback;
 	int server;			/**< 0 if client, number of connections to accept on server */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
