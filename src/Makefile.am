@@ -1,3 +1,5 @@
+SUBDIRS = . tests #build . before tests
+
 AM_CFLAGS = -g -Wall -Werror -I$(srcdir)/../include
 
 lib_LTLIBRARIES = libercat.la libercat_shm.la
