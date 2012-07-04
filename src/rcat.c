@@ -17,7 +17,7 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-#define CHUNK_SIZE 100*1024*1024
+#define CHUNK_SIZE 1024
 #define RECV_NUM 3
 
 #define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
@@ -42,7 +42,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
 	libercat_data_t **pdata = datamr->data;
 
-	if ((*pdata)->size != 1) {
+	if ((*pdata)->size != 1 || (*pdata)->data[0] != '\0') {
 		write(1, (char *)(*pdata)->data, (*pdata)->size);
 		fflush(stdout);
 
@@ -155,6 +155,7 @@ int main(int argc, char **argv) {
 	ackdata->data = rdmabuf+(RECV_NUM+1)*CHUNK_SIZE*sizeof(char);
 	ackdata->max_size = CHUNK_SIZE*sizeof(char);
 	ackdata->size = 1;
+	ackdata->data[0] = 0;
 
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
