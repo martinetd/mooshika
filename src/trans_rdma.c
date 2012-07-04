@@ -182,6 +182,8 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 
 	case RDMA_CM_EVENT_DISCONNECTED:
 		ERROR_LOG("DISCONNECT EVENT...");
+
+		trans->state = LIBERCAT_CLOSED;
 		if (trans->disconnect_callback)
 			trans->disconnect_callback(trans);
 		pthread_mutex_lock(&trans->lock);

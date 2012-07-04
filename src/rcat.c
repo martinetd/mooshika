@@ -36,8 +36,6 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 }
 
 void callback_disconnect(libercat_trans_t *trans) {
-	libercat_destroy_trans(trans);
-	exit(0);
 }
 
 void callback_recv(libercat_trans_t *trans, void *arg) {
@@ -81,7 +79,7 @@ int main(int argc, char **argv) {
 	attr.rq_depth = RECV_NUM+2;
 	attr.addr.sa_in.sin_family = AF_INET;
 	attr.addr.sa_in.sin_port = htons(1235);
-	attr.disconnect_callback = callback_disconnect;
+//	attr.disconnect_callback = callback_disconnect;
 
 	// argument handling
 	static struct option long_options[] = {
@@ -198,10 +196,16 @@ int main(int argc, char **argv) {
 	pollfd_stdin.events = POLLIN | POLLPRI;
 	pollfd_stdin.revents = 0;
 
-	while (1) {
+	while (trans->state != LIBERCAT_CLOSED) {
 
-		if (poll(&pollfd_stdin, 1, -1) == -1)
+		i = poll(&pollfd_stdin, 1, 100);
+
+		if (i == -1)
 			break;
+
+		if (i == 0)
+			continue;
+
 		wdata->size = read(0, (char*)wdata->data, wdata->max_size);
 		if (wdata->size == 0)
 			break;
