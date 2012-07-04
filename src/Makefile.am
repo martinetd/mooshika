@@ -1,4 +1,4 @@
-AM_CFLAGS = -g -Wall -Werror
+AM_CFLAGS = -g -Wall -Werror -I$(srcdir)/../include
 
 lib_LTLIBRARIES = libercat.la libercat_shm.la
 libercat_la_SOURCES = trans_rdma.c
