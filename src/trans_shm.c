@@ -147,7 +147,7 @@ libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t s
 		return NULL;
 	}
 
-	rkey->rmemaddr = addr;
+	rkey->raddr = addr;
 	rkey->rkey = mr->rkey;
 	rkey->size = size;
 
@@ -239,7 +239,7 @@ static void *libercat_recv_thread(void *arg) {
 		}
 	}
 
-	trans->state = LIBERCAT_DISCONNECTED;
+	trans->state = LIBERCAT_CLOSED;
 	if (trans->disconnect_callback)
 		trans->disconnect_callback(trans);
 
@@ -754,14 +754,3 @@ int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 
 	return ret;
 }
-
-// callbacks would all be run in a big send/recv_thread
-
-
-// server specific:
-int libercat_write(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size);
-int libercat_read(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size);
-
-// client specific:
-int libercat_write_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_write server side ~= libercat_read
-int libercat_read_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_read server side ~= libercat_write

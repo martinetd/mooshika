@@ -111,7 +111,7 @@ libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t s
 		return NULL;
 	}
 
-	rkey->rmemaddr = addr;
+	rkey->raddr = addr;
 	rkey->rkey = mr->rkey;
 	rkey->size = size;
 
@@ -878,7 +878,7 @@ int libercat_connect(libercat_trans_t *trans) {
  * @return 0 on success, the value of errno on error
  */
 int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
-	INFO_LOG("posted recv");
+	INFO_LOG("posting recv");
 	libercat_ctx_t *rctx;
 	int i, ret;
 
@@ -926,21 +926,36 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 	return 0;
 }
 
-/**
- * Post a send buffer.
- *
- * @param trans        [IN]
- * @param data         [IN] the data buffer to be sent
- * @param mr           [IN] the mr in which the data lives
- * @param callback     [IN] function that'll be called when done
- * @param callback_arg [IN] argument to give to the callback
- *
- * @return 0 on success, the value of errno on error
- */
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
-	INFO_LOG("posted send");
+static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcode opcode, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	INFO_LOG("posting a send with op %d", opcode);
 	libercat_ctx_t *wctx;
 	int i, ret;
+
+	// opcode-specific checks:
+	if (opcode == IBV_WR_RDMA_WRITE) {
+		if (!rloc) {
+			ERROR_LOG("Cannot write without a remote location!");
+			return EINVAL;
+		}
+		if (data->size > rloc->size) {
+			ERROR_LOG("trying to send a buffer bigger than the remote buffer (shall we truncate?)");
+			return EMSGSIZE;
+		}
+	} else if (opcode == IBV_WR_RDMA_READ) {
+		if (!rloc) {
+			ERROR_LOG("Cannot write without a remote location!");
+			return EINVAL;
+		}
+		if (rloc->size > data->size) {
+			ERROR_LOG("trying to read more than data buffer can hold (shall we truncate?)");
+			return EMSGSIZE;
+		}
+	} else if (opcode == IBV_WR_SEND) {
+	} else {
+		ERROR_LOG("unsupported op code: %d", opcode);
+		return EINVAL;
+	}
+
 
 	pthread_mutex_lock(&trans->lock);
 
@@ -974,11 +989,14 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 	wctx->sge.lkey = mr->lkey;
 	wctx->wr.wwr.next = NULL;
 	wctx->wr.wwr.wr_id = (uint64_t)wctx;
-	wctx->wr.wwr.opcode = IBV_WR_SEND; // _WITH_IMM
+	wctx->wr.wwr.opcode = opcode;
 	wctx->wr.wwr.send_flags = IBV_SEND_SIGNALED;
 	wctx->wr.wwr.sg_list = &wctx->sge;
 	wctx->wr.wwr.num_sge = 1;
-//	wctx->wr.wwr.imm_data = htonl(42);
+	if (rloc) {
+		wctx->wr.wwr.wr.rdma.rkey = rloc->rkey;
+		wctx->wr.wwr.wr.rdma.remote_addr = rloc->raddr;
+	}
 
 	ret = ibv_post_send(trans->qp, &wctx->wr.wwr, &trans->bad_send_wr);
 	if (ret) {
@@ -987,6 +1005,21 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 	}
 
 	return 0;
+}
+
+/**
+ * Post a send buffer.
+ *
+ * @param trans        [IN]
+ * @param data         [IN] the data buffer to be sent
+ * @param mr           [IN] the mr in which the data lives
+ * @param callback     [IN] function that'll be called when done
+ * @param callback_arg [IN] argument to give to the callback
+ *
+ * @return 0 on success, the value of errno on error
+ */
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+	return libercat_post_send_generic(trans, IBV_WR_SEND, data, mr, NULL, callback, callback_arg);
 }
 
 /**
@@ -1052,8 +1085,49 @@ int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 
 
 // server specific:
-int libercat_write(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size);
-int libercat_read(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size);
+
+
+int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return libercat_post_send_generic(trans, IBV_WR_RDMA_READ, data, mr, rloc, callback, callback_arg);
+}
+
+int libercat_post_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return libercat_post_send_generic(trans, IBV_WR_RDMA_WRITE, data, mr, rloc, callback, callback_arg);
+}
+
+int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	int ret;
+
+	pthread_mutex_lock(&lock);
+	ret = libercat_post_read(trans, data, mr, rloc, libercat_wait_callback, &lock);
+
+	if (!ret) {
+		pthread_mutex_lock(&lock);
+		pthread_mutex_unlock(&lock);
+		pthread_mutex_destroy(&lock);
+	}
+
+	return ret;
+}
+
+
+int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	int ret;
+
+	pthread_mutex_lock(&lock);
+	ret = libercat_post_write(trans, data, mr, rloc, libercat_wait_callback, &lock);
+
+	if (!ret) {
+		pthread_mutex_lock(&lock);
+		pthread_mutex_unlock(&lock);
+		pthread_mutex_destroy(&lock);
+	}
+
+	return ret;
+}
+
 
 // client specific:
 int libercat_write_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_write server side ~= libercat_read
