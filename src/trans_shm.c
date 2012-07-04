@@ -131,7 +131,7 @@ int libercat_dereg_mr(struct ibv_mr *mr) {
 }
 
 /**
- * libercat_make_rkey: makes a rkey to send it for remote host use
+ * libercat_make_rloc: makes a rkey to send it for remote host use
  * 
  * @param mr   [IN] the mr in which the addr belongs
  * @param addr [IN] the addr to give
@@ -139,19 +139,19 @@ int libercat_dereg_mr(struct ibv_mr *mr) {
  *
  * @return a pointer to the rkey on success, NULL on failure.
  */
-libercat_rloc_t *libercat_make_rkey(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
-	libercat_rloc_t *rkey;
-	rkey = malloc(sizeof(libercat_rloc_t));
-	if (!rkey) {
+libercat_rloc_t *libercat_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
+	libercat_rloc_t *rloc;
+	rloc = malloc(sizeof(libercat_rloc_t));
+	if (!rloc) {
 		ERROR_LOG("Out of memory!");
 		return NULL;
 	}
 
-	rkey->raddr = addr;
-	rkey->rkey = mr->rkey;
-	rkey->size = size;
+	rloc->raddr = addr;
+	rloc->rkey = mr->rkey;
+	rloc->size = size;
 
-	return rkey;
+	return rloc;
 }
 
 /**

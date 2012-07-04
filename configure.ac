@@ -42,5 +42,5 @@ AM_CONDITIONAL(USE_SHM, test "x$enable_shm" = "xyes")
 
 
 AC_CONFIG_HEADERS([config.h])
-AC_CONFIG_FILES([Makefile src/Makefile rpm/Makefile src/libercat.pc])
+AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libercat.pc])
 AC_OUTPUT
