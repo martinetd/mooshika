@@ -4,11 +4,11 @@ SUBDIRS = src \
 include_HEADERS = include/trans_rdma.h
 
 rpm: rpm/libercat.spec rpmdirs rpm/libercat.spec rpm/SOURCES/libercat-0.1.tar.gz
-	cp -f $(srcdir)/rpm/libercat.spec rpm
+	cp -f $(srcdir)/rpm/libercat.spec rpm || true
 	cd rpm; rpmbuild -bb libercat.spec
 
 srpm: rpm/libercat.spec rpmdirs rpm/libercat.spec rpm/SOURCES/libercat-0.1.tar.gz
-	cp -f $(srcdir)/rpm/libercat.spec rpm
+	cp -f $(srcdir)/rpm/libercat.spec rpm || true
 	cd rpm; rpmbuild -ba libercat.spec
 
 rpm/SOURCES/libercat-0.1.tar.gz:
