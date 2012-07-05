@@ -3,16 +3,11 @@ SUBDIRS = src \
 
 include_HEADERS = include/trans_rdma.h
 
-rpm: rpm/libercat.spec rpmdirs rpm/libercat.spec rpm/SOURCES/libercat-0.1.tar.gz
-	cp -f $(srcdir)/rpm/libercat.spec rpm || true
-	cd rpm; rpmbuild -bb libercat.spec
+rpm: dist libercat.spec
+	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -tb $(distdir).tar.gz
 
-srpm: rpm/libercat.spec rpmdirs rpm/libercat.spec rpm/SOURCES/libercat-0.1.tar.gz
-	cp -f $(srcdir)/rpm/libercat.spec rpm || true
-	cd rpm; rpmbuild -ba libercat.spec
-
-rpm/SOURCES/libercat-0.1.tar.gz:
-	tar -czf $@ --exclude $@ -C $(srcdir) .
+srpm: dist libercat.spec
+	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -ts $(distdir).tar.gz
 
 rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS:
 	mkdir -p $@
@@ -25,3 +20,6 @@ clean-local:
 doc:
 	doxygen ./doxygen.conf
 	cd doxygen/latex; make pdf
+
+EXTRA_DIST=libercat.spec \
+           src/log.h
