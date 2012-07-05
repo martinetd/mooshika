@@ -20,17 +20,14 @@ Requires: librdmacm-devel, libibverbs-devel
 Development files for libercat
 
 
-%define _topdir .
-
 %description
 This package contains the libercat library
 
 %prep
-tar xf ../SOURCES/%{name}-%{version}.tar.gz
-#%setup
+%setup -q -n %{name}-%{version}
 
 %build
-%configure
+%configure @ac_configure_args@
 make
 
 %install

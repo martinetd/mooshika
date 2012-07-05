@@ -40,7 +40,9 @@ fi
 AC_ARG_ENABLE([shm], AS_HELP_STRING([--enable-shm], [use shmem implementation for the rcat binary [default=no]]))
 AM_CONDITIONAL(USE_SHM, test "x$enable_shm" = "xyes")
 
+#for exporting to spec file
+AC_SUBST(ac_configure_args)
 
 AC_CONFIG_HEADERS([config.h])
-AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libercat.pc])
+AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libercat.pc libercat.spec])
 AC_OUTPUT
