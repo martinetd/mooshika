@@ -163,8 +163,10 @@ int main(int argc, char **argv) {
 	datamr.ackdata = ackdata; 
 	datamr.lock = &lock;
 	datamr.cond = &cond;
+
+	pthread_mutex_lock(&lock);
 	TEST_Z(libercat_post_recv(trans, &rdata, mr, callback_recv, &datamr));
-	
+
 	if (trans->server) {
 		TEST_Z(libercat_finalize_accept(trans));
 	} else {
@@ -177,7 +179,6 @@ int main(int argc, char **argv) {
 
 	libercat_rloc_t *rloc;
 
-	pthread_mutex_lock(&lock);
 	if (trans->server) {
 		printf("wait for rloc\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive rloc
