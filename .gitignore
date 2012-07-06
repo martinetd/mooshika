@@ -5,6 +5,7 @@ doxygen
 *.pc
 *.loT
 *~
+m4
 \#*\#
 libercat.spec
 rcat
