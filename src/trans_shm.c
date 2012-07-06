@@ -754,3 +754,21 @@ int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 
 	return ret;
 }
+
+
+int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return 0;
+}
+
+int libercat_post_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return 0;
+}
+
+int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+	return 0;
+}
+
+
+int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+	return 0;
+}
