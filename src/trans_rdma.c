@@ -258,7 +258,9 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 
 		switch (wc.opcode) {
 		case IBV_WC_SEND:
-			INFO_LOG("WC_SEND");
+		case IBV_WC_RDMA_WRITE:
+		case IBV_WC_RDMA_READ:
+			INFO_LOG("send (send, rdma write or rdma read): %d", wc.opcode);
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
 			if (ctx->callback)
@@ -286,14 +288,6 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			ctx->used = 0;
 			pthread_cond_broadcast(&trans->cond);
 			pthread_mutex_unlock(&trans->lock);
-			break;
-
-		case IBV_WC_RDMA_WRITE:
-			INFO_LOG("WC_RDMA_WRITE");
-			break;
-
-		case IBV_WC_RDMA_READ:
-			INFO_LOG("WC_RDMA_READ");
 			break;
 
 		default:
@@ -1132,3 +1126,5 @@ int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *data, struct i
 // client specific:
 int libercat_write_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_write server side ~= libercat_read
 int libercat_read_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_read server side ~= libercat_write
+
+C/l finished at Fri Jul  6 10:11:38
