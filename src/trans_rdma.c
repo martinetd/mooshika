@@ -926,22 +926,13 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	int i, ret;
 
 	// opcode-specific checks:
-	if (opcode == IBV_WR_RDMA_WRITE) {
+	if (opcode == IBV_WR_RDMA_WRITE || opcode == IBV_WR_RDMA_READ) {
 		if (!rloc) {
-			ERROR_LOG("Cannot write without a remote location!");
+			ERROR_LOG("Cannot do rdma without a remote location!");
 			return EINVAL;
 		}
 		if (data->size > rloc->size) {
-			ERROR_LOG("trying to send a buffer bigger than the remote buffer (shall we truncate?)");
-			return EMSGSIZE;
-		}
-	} else if (opcode == IBV_WR_RDMA_READ) {
-		if (!rloc) {
-			ERROR_LOG("Cannot write without a remote location!");
-			return EINVAL;
-		}
-		if (rloc->size > data->size) {
-			ERROR_LOG("trying to read more than data buffer can hold (shall we truncate?)");
+			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
 			return EMSGSIZE;
 		}
 	} else if (opcode == IBV_WR_SEND) {
@@ -1126,5 +1117,3 @@ int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *data, struct i
 // client specific:
 int libercat_write_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_write server side ~= libercat_read
 int libercat_read_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_read server side ~= libercat_write
-
-C/l finished at Fri Jul  6 10:11:38
