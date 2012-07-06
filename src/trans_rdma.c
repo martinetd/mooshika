@@ -183,6 +183,8 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 	case RDMA_CM_EVENT_DISCONNECTED:
 		ERROR_LOG("DISCONNECT EVENT...");
 
+		ret = -1;
+
 		trans->state = LIBERCAT_CLOSED;
 		if (trans->disconnect_callback)
 			trans->disconnect_callback(trans);
@@ -219,16 +221,17 @@ static void *libercat_cm_thread(void *arg) {
 		if (ret) {
 			ret = errno;
 			ERROR_LOG("rdma_get_cm_event failed: %d. Stopping event watcher thread", ret);
-			pthread_exit(NULL); //TODO: give the value to main thread somewhere? continue a few times?
+			break;
 		}
 		ret = libercat_cma_event_handler(event->id, event);
 		rdma_ack_cm_event(event);
 		if (ret) {
 			ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
-			pthread_exit(NULL);
+			break;
 		}
 	}
 
+	pthread_exit(NULL);
 }
 
 /**
@@ -312,30 +315,32 @@ static void *libercat_cq_thread(void *arg) {
 	while (1) {
 		pthread_testcancel();
 
+		//FIXME: according to the man, it's possible to change channel->fd to be non-blocking and use poll with a proper timeout, so this thread would die properly. It's a problem because we only fail if there are pending read requests at the moment.
 		ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
 		if (ret) {
 			ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
-			pthread_exit(NULL);
+			break;
 		}
 		if (ev_cq != trans->cq) {
-			ERROR_LOG("Unknown cq, leaving thread.");
-			pthread_exit(NULL);
+		 	ERROR_LOG("Unknown cq, leaving thread.");
+			break;
 		}
 
 		ret = ibv_req_notify_cq(trans->cq, 0);
 		if (ret) {
 			ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
-			pthread_exit(NULL);
+			break;
 		}
 
 		ret = libercat_cq_event_handler(trans);
 		ibv_ack_cq_events(trans->cq, 1);
 		if (ret) {
 			ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
-			pthread_exit(NULL);
+			break;
 		}
 	}
 
+	pthread_exit(NULL);
 }
 
 
@@ -381,8 +386,10 @@ void libercat_destroy_trans(libercat_trans_t *trans) {
 
 	if (trans->cm_id)
 		rdma_disconnect(trans->cm_id);
-	if (trans->cq_thread)
-		pthread_join(trans->cq_thread, NULL);
+	if (trans->cm_thread)
+		pthread_join(trans->cm_thread, NULL);
+/*	if (trans->cq_thread)
+		pthread_join(trans->cq_thread, NULL); //FIXME: cf. libercat_cq_thread's fixme, it's possible this never ends */
 
 	// these two functions do the proper if checks
 	libercat_destroy_buffer(trans);
