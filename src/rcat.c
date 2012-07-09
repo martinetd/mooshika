@@ -18,10 +18,10 @@
 #include "trans_rdma.h"
 
 #define CHUNK_SIZE 1024*1024
-#define RECV_NUM 3
+#define RECV_NUM 1
 
-#define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
-#define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
+#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
+#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
 struct datamr {
 	void *data;
@@ -36,10 +36,22 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 }
 
 void callback_disconnect(libercat_trans_t *trans) {
+	if (!trans->private_data)
+		return;
+
+	struct datamr *datamr = trans->private_data;
+	pthread_mutex_lock(datamr->lock);
+	pthread_cond_signal(datamr->cond);
+	pthread_mutex_unlock(datamr->lock);
 }
 
 void callback_recv(libercat_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
+	if (!datamr) {
+		ERROR_LOG("no callback_arg?");
+		return;
+	}
+
 	libercat_data_t **pdata = datamr->data;
 
 	if ((*pdata)->size != 1 || (*pdata)->data[0] != '\0') {
@@ -53,7 +65,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 
 		pthread_mutex_lock(datamr->lock);
 		pthread_cond_signal(datamr->cond);
-		pthread_mutex_unlock(datamr->lock);		
+		pthread_mutex_unlock(datamr->lock);
 	}
 }
 
@@ -61,88 +73,12 @@ void print_help(char **argv) {
 	printf("Usage: %s {-s|-c addr}\n", argv[0]);
 }
 
-int main(int argc, char **argv) {
-
-
-	libercat_trans_t *trans;
+void* handle_trans(void *arg) {
+	libercat_trans_t *trans = arg;
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
-
 	libercat_data_t *wdata;
 
-	libercat_trans_attr_t attr;
-
-	memset(&attr, 0, sizeof(libercat_trans_attr_t));
-
-	attr.server = -1; // put an incorrect value to check if we're either client or server
-	// sane values for optional or non-configurable elements
-	attr.rq_depth = RECV_NUM+2;
-	attr.addr.sa_in.sin_family = AF_INET;
-	attr.addr.sa_in.sin_port = htons(1235);
-//	attr.disconnect_callback = callback_disconnect;
-
-	// argument handling
-	static struct option long_options[] = {
-		{ "client",	required_argument,	0,		'c' },
-		{ "server",	required_argument,	0,		's' },
-		{ "port",	required_argument,	0,		'p' },
-		{ "help",	no_argument,		0,		'h' },
-		{ 0,		0,			0,		 0  }
-	};
-
-	int option_index = 0;
-	int op;
-	while ((op = getopt_long(argc, argv, "@hvsc:p:", long_options, &option_index)) != -1) {
-		switch(op) {
-			case '@':
-				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
-				printf("Release = %s\n", VERSION);
-				printf("Release comment = %s\n", VERSION_COMMENT);
-				printf("Git HEAD = %s\n", _GIT_HEAD_COMMIT ) ;
-				printf("Git Describe = %s\n", _GIT_DESCRIBE ) ;
-				exit(0);
-			case 'h':
-				print_help(argv);
-				exit(0);
-			case 'v':
-				ERROR_LOG("verbose switch not ready just yet, come back later!\n");
-				break;
-			case 'c':
-				attr.server = 0;
-				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
-				break;
-			case 's':
-				attr.server = 10;
-				inet_pton(AF_INET, "0.0.0.0", &((struct sockaddr_in*) &attr.addr)->sin_addr);
-				break;
-			case 'p':
-				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));
-				break;
-			default:
-				ERROR_LOG("Failed to parse arguments");
-				print_help(argv);
-				exit(EINVAL);
-		}
-	}
-
-	if (attr.server == -1) {
-		ERROR_LOG("must be either a client or a server!");
-		print_help(argv);
-		exit(EINVAL);
-	}
-
-	TEST_Z(libercat_init(&trans, &attr));
-
-	if (!trans)
-		exit(-1);
-
-
-	if (trans->server) {
-		TEST_Z(libercat_bind_server(trans));
-		trans = libercat_accept_one(trans);
-	} else { //client
-		TEST_Z(libercat_connect(trans));
-	}
 
 	TEST_NZ(rdmabuf = malloc((RECV_NUM+2)*CHUNK_SIZE*sizeof(char)));
 	memset(rdmabuf, 0, (RECV_NUM+2)*CHUNK_SIZE*sizeof(char));
@@ -181,7 +117,9 @@ int main(int argc, char **argv) {
 		datamr[i].cond = &cond;
 		TEST_Z(libercat_post_recv(trans, &(rdata[i]), mr, callback_recv, &(datamr[i])));
 	}
-	
+
+	trans->private_data = datamr;
+
 	if (trans->server) {
 		TEST_Z(libercat_finalize_accept(trans));
 	} else {
@@ -197,7 +135,7 @@ int main(int argc, char **argv) {
 	pollfd_stdin.events = POLLIN | POLLPRI;
 	pollfd_stdin.revents = 0;
 
-	while (trans->state != LIBERCAT_CLOSED) {
+	while (trans->state == LIBERCAT_CONNECTED) {
 
 		i = poll(&pollfd_stdin, 1, 100);
 
@@ -220,5 +158,118 @@ int main(int argc, char **argv) {
 
 	libercat_destroy_trans(trans);
 
+	pthread_exit(NULL);
+}
+
+int main(int argc, char **argv) {
+
+
+	libercat_trans_t *trans;
+	libercat_trans_t *child_trans;
+
+	libercat_trans_attr_t attr;
+
+	int mt_server = 0;
+
+	memset(&attr, 0, sizeof(libercat_trans_attr_t));
+
+	attr.server = -1; // put an incorrect value to check if we're either client or server
+	// sane values for optional or non-configurable elements
+	attr.rq_depth = RECV_NUM+2;
+	attr.addr.sa_in.sin_family = AF_INET;
+	attr.addr.sa_in.sin_port = htons(1235);
+	attr.disconnect_callback = callback_disconnect;
+
+	// argument handling
+	static struct option long_options[] = {
+		{ "client",	required_argument,	0,		'c' },
+		{ "server",	required_argument,	0,		's' },
+		{ "port",	required_argument,	0,		'p' },
+		{ "help",	no_argument,		0,		'h' },
+		{ "multi",	no_argument,		0,		'm' },
+		{ 0,		0,			0,		 0  }
+	};
+
+	int option_index = 0;
+	int op;
+	while ((op = getopt_long(argc, argv, "@hvmsc:p:", long_options, &option_index)) != -1) {
+		switch(op) {
+			case '@':
+				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
+				printf("Release = %s\n", VERSION);
+				printf("Release comment = %s\n", VERSION_COMMENT);
+				printf("Git HEAD = %s\n", _GIT_HEAD_COMMIT ) ;
+				printf("Git Describe = %s\n", _GIT_DESCRIBE ) ;
+				exit(0);
+			case 'h':
+				print_help(argv);
+				exit(0);
+			case 'v':
+				ERROR_LOG("verbose switch not ready just yet, come back later!\n");
+				break;
+			case 'c':
+				attr.server = 0;
+				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
+				break;
+			case 's':
+				attr.server = 10;
+				inet_pton(AF_INET, "0.0.0.0", &((struct sockaddr_in*) &attr.addr)->sin_addr);
+				break;
+			case 'p':
+				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));
+				break;
+			case 'm':
+				mt_server = 1;
+				break;
+			default:
+				ERROR_LOG("Failed to parse arguments");
+				print_help(argv);
+				exit(EINVAL);
+		}
+	}
+
+	if (attr.server == -1) {
+		ERROR_LOG("must be either a client or a server!");
+		print_help(argv);
+		exit(EINVAL);
+	}
+
+	TEST_Z(libercat_init(&trans, &attr));
+
+	if (!trans)
+		exit(-1);
+
+
+	if (trans->server) {
+		TEST_Z(libercat_bind_server(trans));
+		pthread_attr_t attr_thr;
+
+		/* Init for thread parameter (mostly for scheduling) */
+		if(pthread_attr_init(&attr_thr) != 0)
+			ERROR_LOG("can't init pthread's attributes");
+
+		if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+			ERROR_LOG("can't set pthread's scope");
+
+		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+			ERROR_LOG("can't set pthread's join state");
+		pthread_t id;
+
+		while (1) {
+			child_trans = libercat_accept_one(trans);
+			if (!child_trans) {
+				ERROR_LOG("accept_one failed!");
+				break;
+			}
+			pthread_create(&id, &attr_thr, handle_trans, child_trans);
+		}
+		libercat_destroy_trans(trans);
+	} else { //client
+		TEST_Z(libercat_connect(trans));
+		handle_trans(trans);
+	       
+	}
+
 	return 0;
 }
+

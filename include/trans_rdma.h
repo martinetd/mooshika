@@ -86,7 +86,7 @@ typedef void (*disconnect_callback_t) (libercat_trans_t *trans);
  * RDMA transport instance
  */
 struct libercat_trans {
-	enum {
+	enum { // FIXME: make volatile?
 		LIBERCAT_INIT,
 		LIBERCAT_ADDR_RESOLVED,
 		LIBERCAT_ROUTE_RESOLVED,
@@ -106,6 +106,7 @@ struct libercat_trans {
 	struct ibv_cq *cq;		/**< Completion Queue pointer */
 	pthread_t cq_thread;		/**< Thread id for completion queue handler */
 	disconnect_callback_t disconnect_callback;
+	void *private_data;
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
