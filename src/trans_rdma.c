@@ -279,6 +279,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			INFO_LOG("WC_RECV");
 
 			if (wc.wc_flags & IBV_WC_WITH_IMM) {
+				//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
 				ERROR_LOG("imm_data: %d", ntohl(wc.imm_data));
 			}
 
@@ -942,7 +943,7 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
 			return EMSGSIZE;
 		}
-	} else if (opcode == IBV_WR_SEND) {
+	} else if (opcode == IBV_WR_SEND || opcode == IBV_WR_SEND_WITH_IMM) {
 	} else {
 		ERROR_LOG("unsupported op code: %d", opcode);
 		return EINVAL;
@@ -982,6 +983,7 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	wctx->wr.wwr.next = NULL;
 	wctx->wr.wwr.wr_id = (uint64_t)wctx;
 	wctx->wr.wwr.opcode = opcode;
+//FIXME	wctx->wr.wwr.imm_data = htonl(data->imm_data);
 	wctx->wr.wwr.send_flags = IBV_SEND_SIGNALED;
 	wctx->wr.wwr.sg_list = &wctx->sge;
 	wctx->wr.wwr.num_sge = 1;
