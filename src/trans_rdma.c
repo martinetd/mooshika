@@ -226,7 +226,8 @@ static void *libercat_cm_thread(void *arg) {
 		ret = libercat_cma_event_handler(event->id, event);
 		rdma_ack_cm_event(event);
 		if (ret) {
-			ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
+			if (trans->state != LIBERCAT_CLOSED)
+				ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
 			break;
 		}
 	}
@@ -255,7 +256,8 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			ERROR_LOG("Something was bad on that send");
 		}
 		if (wc.status) {
-			ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
+			if (trans->state != LIBERCAT_CLOSED)
+				ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
 			return wc.status;
 		}
 
@@ -336,7 +338,8 @@ static void *libercat_cq_thread(void *arg) {
 		ret = libercat_cq_event_handler(trans);
 		ibv_ack_cq_events(trans->cq, 1);
 		if (ret) {
-			ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
+			if (trans->state != LIBERCAT_CLOSED)
+				ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
 			break;
 		}
 	}
@@ -680,6 +683,8 @@ int libercat_finalize_accept(libercat_trans_t *trans) {
 	conn_param.private_data = NULL;
 	conn_param.private_data_len = 0;
 	conn_param.rnr_retry_count = 10;
+
+	pthread_mutex_lock(&trans->lock);
 	ret = rdma_accept(trans->cm_id, &conn_param);
 	if (ret) {
 		ret = errno;
@@ -688,13 +693,11 @@ int libercat_finalize_accept(libercat_trans_t *trans) {
 	}
 
 
-	pthread_cond_wait(&trans->cond, &trans->lock);
-	pthread_mutex_unlock(&trans->lock);
+	while (trans->state != LIBERCAT_CONNECTED) {
+		pthread_cond_wait(&trans->cond, &trans->lock);
+	}
 
-	if (trans->state != LIBERCAT_CONNECTED) {
-		ERROR_LOG("state isn't what was expected");
-		return ECONNABORTED;
-	}	
+	pthread_mutex_unlock(&trans->lock);
 
 	return 0;
 }
@@ -734,11 +737,24 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 
 		case RDMA_CM_EVENT_ESTABLISHED:
 			INFO_LOG("ESTABLISHED");
+			trans = cm_id->context;
+			pthread_mutex_lock(&trans->lock);
+			trans->state = LIBERCAT_CONNECTED;
+			pthread_cond_broadcast(&trans->cond);
+			pthread_mutex_unlock(&trans->lock);
+			trans = NULL;
 			break;
 
 		case RDMA_CM_EVENT_DISCONNECTED:
 			INFO_LOG("DISCONNECTED");
-			libercat_destroy_trans((libercat_trans_t *)cm_id->context);
+			trans = cm_id->context;
+			pthread_mutex_lock(&trans->lock);
+			trans->state = LIBERCAT_CLOSED;
+			if (trans->disconnect_callback)
+				trans->disconnect_callback(trans);
+			pthread_cond_broadcast(&trans->cond);
+			pthread_mutex_unlock(&trans->lock);
+			trans = NULL;
 			break;
 
 		default:
@@ -760,7 +776,6 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 			ERROR_LOG("can't set pthread's join state");
 
-		pthread_create(&trans->cm_thread, &attr_thr, libercat_cm_thread, trans);
 		pthread_create(&trans->cq_thread, &attr_thr, libercat_cq_thread, trans);
 	}
 	return trans;
