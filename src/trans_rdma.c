@@ -39,6 +39,9 @@
 #include <semaphore.h>  //sem_* (is it a good idea to mix sem and pthread_cond/mutex?)
 #include <arpa/inet.h>  //inet_ntop
 #include <netinet/in.h> //sock_addr_in
+#include <unistd.h>	//fcntl
+#include <fcntl.h>	//fcntl
+#include <poll.h>	//poll
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
@@ -265,7 +268,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 		case IBV_WC_SEND:
 		case IBV_WC_RDMA_WRITE:
 		case IBV_WC_RDMA_READ:
-			INFO_LOG("send (send, rdma write or rdma read): %d", wc.opcode);
+			INFO_LOG("WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc.opcode);
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
 			if (ctx->callback)
@@ -315,10 +318,31 @@ static void *libercat_cq_thread(void *arg) {
 	void *ev_ctx;
 	int ret;
 
-	while (1) {
-		pthread_testcancel();
+	//make get_cq_event_nonblocking for poll
+	int flags;
+	flags = fcntl(trans->comp_channel->fd, F_GETFL);
+	ret = fcntl(trans->comp_channel->fd, F_SETFL, flags | O_NONBLOCK);
+	if (ret < 0) {
+		ERROR_LOG("Failed to make the comp channel nonblock");
+		pthread_exit(NULL);
+	}
 
-		//FIXME: according to the man, it's possible to change channel->fd to be non-blocking and use poll with a proper timeout, so this thread would die properly. It's a problem because we only fail if there are pending read requests at the moment.
+	struct pollfd comp_pollfd;
+	comp_pollfd.fd = trans->comp_channel->fd;
+	comp_pollfd.events = POLLIN;
+	comp_pollfd.revents = 0;
+
+	while (trans->state != LIBERCAT_CLOSED) {
+		ret = poll(&comp_pollfd, 1, 100);
+
+		if (ret == 0)
+			continue;
+
+		if (ret == -1) {
+			ERROR_LOG("poll failed");
+			break;
+		}
+
 		ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
 		if (ret) {
 			ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
@@ -356,10 +380,14 @@ static void *libercat_cq_thread(void *arg) {
  * @return void even if some stuff here can fail //FIXME?
  */
 static void libercat_destroy_buffer(libercat_trans_t *trans) {
-	if (trans->send_buf)
+	if (trans->send_buf) {
 		free(trans->send_buf);
-	if (trans->recv_buf)
+		trans->send_buf = NULL;
+	}
+	if (trans->recv_buf) {
 		free(trans->recv_buf);
+		trans->recv_buf = NULL;
+	}
 }
 
 /**
@@ -370,45 +398,72 @@ static void libercat_destroy_buffer(libercat_trans_t *trans) {
  * @return void, even if the functions _can_ fail we choose to ignore it. //FIXME?
  */
 static void libercat_destroy_qp(libercat_trans_t *trans) {
-	if (trans->qp)
+	if (trans->qp) {
 		ibv_destroy_qp(trans->qp);
-	if (trans->cq)
+		trans->qp = NULL;
+	}
+	if (trans->cq) {
 		ibv_destroy_cq(trans->cq);
-	if (trans->comp_channel)
+		trans->cq = NULL;
+	}
+	if (trans->comp_channel) {
 		ibv_destroy_comp_channel(trans->comp_channel);
-	if (trans->pd)
+		trans->comp_channel = NULL;
+	}
+	if (trans->pd) {
 		ibv_dealloc_pd(trans->pd);
+		trans->pd = NULL;
+	}
 }
 
 
 /**
  * libercat_destroy_trans: disconnects and free trans data
  *
- * @param trans [INOUT] the trans to destroy
+ * @param ptrans [INOUT] pointer to the trans to destroy
  */
-void libercat_destroy_trans(libercat_trans_t *trans) {
+void libercat_destroy_trans(libercat_trans_t **ptrans) {
 
-	if (trans->cm_id)
-		rdma_disconnect(trans->cm_id);
-	if (trans->cm_thread)
-		pthread_join(trans->cm_thread, NULL);
-/*	if (trans->cq_thread)
-		pthread_join(trans->cq_thread, NULL); //FIXME: cf. libercat_cq_thread's fixme, it's possible this never ends */
+	libercat_trans_t *trans = *ptrans;
 
-	// these two functions do the proper if checks
-	libercat_destroy_buffer(trans);
-	libercat_destroy_qp(trans);
+	if (trans) {
+		pthread_mutex_lock(&trans->lock);
+		if (trans->cm_id)
+			rdma_disconnect(trans->cm_id);
 
-	if (trans->cm_id)
-		rdma_destroy_id(trans->cm_id);
-	if (trans->event_channel)
-		rdma_destroy_event_channel(trans->event_channel);
+		while (trans->state != LIBERCAT_CLOSED) {
+			ERROR_LOG("we're not closed yet, waiting for disconnect_event");
+			pthread_cond_wait(&trans->cond, &trans->lock);
+		}
+		pthread_mutex_unlock(&trans->lock);
 
-	//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
-	pthread_mutex_destroy(&trans->lock);
-	pthread_cond_destroy(&trans->cond);
+		if (trans->cm_thread)
+			pthread_join(trans->cm_thread, NULL);
+		if (trans->cq_thread)
+			pthread_join(trans->cq_thread, NULL); //FIXME: cf. libercat_cq_thread's fixme, it's possible this never ends
 
-	free(trans);
+		// these two functions do the proper if checks
+		libercat_destroy_buffer(trans);
+		libercat_destroy_qp(trans);
+
+		if (trans->cm_id) {
+			rdma_destroy_id(trans->cm_id);
+			trans->cm_id = NULL;
+		}
+		// event channel is shared between all children, so don't close it unless it's its own.
+		if (((!trans->server) || (trans->state == LIBERCAT_LISTENING)) && trans->event_channel) {
+			rdma_destroy_event_channel(trans->event_channel);
+			trans->event_channel = NULL;
+		}
+
+		//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
+		pthread_mutex_unlock(&trans->lock);
+		pthread_mutex_destroy(&trans->lock);
+		pthread_cond_destroy(&trans->cond);
+
+		free(trans);
+		*ptrans = NULL;
+	}
 }
 
 /**
@@ -438,7 +493,7 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	if (!trans->event_channel) {
 		ret = errno;
 		ERROR_LOG("create_event_channel failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return ret;
 	}
 
@@ -446,7 +501,7 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	if (ret) {
 		ret = errno;
 		ERROR_LOG("create_id failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return ret;
 	}
 
@@ -467,13 +522,13 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return ret;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return ret;
 	}
 
@@ -497,10 +552,11 @@ static int libercat_create_qp(libercat_trans_t *trans, struct rdma_cm_id *cm_id)
 	init_attr.cap.max_recv_wr = trans->rq_depth;
 	init_attr.cap.max_recv_sge = 1;
 	init_attr.cap.max_send_sge = 1;
-	init_attr.cap.max_inline_data = 64;
+	init_attr.cap.max_inline_data = 0; // change if IMM
 	init_attr.qp_type = IBV_QPT_RC;
 	init_attr.send_cq = trans->cq;
 	init_attr.recv_cq = trans->cq;
+	init_attr.sq_sig_all = 1;
 
 	if (rdma_create_qp(cm_id, trans->pd, &init_attr)) {
 		ret = errno;
@@ -629,6 +685,8 @@ int libercat_bind_server(libercat_trans_t *trans) {
 		return ret;
 	}
 
+	trans->state = LIBERCAT_LISTENING;
+
 	return 0;
 }
 
@@ -653,13 +711,13 @@ static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct r
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return NULL;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return NULL;
 	}
 
@@ -702,6 +760,28 @@ int libercat_finalize_accept(libercat_trans_t *trans) {
 	return 0;
 }
 
+/**
+ * libercat_start_cm_thread: starts cm event thread for server side in case there's no accept_one idling
+ *
+ * @param trans [IN]
+ *
+ * @return same as pthread_create (0 on success)
+ */
+int libercat_start_cm_thread(libercat_trans_t *trans) {
+	pthread_attr_t attr_thr;
+
+	/* Init for thread parameter (mostly for scheduling) */
+	if(pthread_attr_init(&attr_thr) != 0)
+		ERROR_LOG("can't init pthread's attributes");
+
+	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+		ERROR_LOG("can't set pthread's scope");
+
+	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+		ERROR_LOG("can't set pthread's join state");
+
+	return pthread_create(&trans->cm_thread, &attr_thr, libercat_cm_thread, trans);
+}
 
 /**
  * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it
@@ -760,6 +840,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 		default:
 			INFO_LOG("unhandled event: %s", rdma_event_str(event->event));
 		}
+		rdma_ack_cm_event(event);
 	}
 	if (trans) {
 		libercat_setup_qp(trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...

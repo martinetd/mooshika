@@ -10,7 +10,6 @@ m4
 libercat.spec
 rcat
 cscope*
-.deps/
 Makefile
 Makefile.in
 aclocal.m4
@@ -27,10 +26,6 @@ install-sh
 libtool
 ltmain.sh
 missing
-src/.deps/
-src/.libs/
-src/Makefile
-src/Makefile.in
-src/libercat.la
-src/trans_rdma.lo
+.deps
+.libs
 stamp-h1

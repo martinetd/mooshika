@@ -156,7 +156,7 @@ void* handle_trans(void *arg) {
 	}	
 
 
-	libercat_destroy_trans(trans);
+	libercat_destroy_trans(&trans);
 
 	pthread_exit(NULL);
 }
@@ -255,15 +255,22 @@ int main(int argc, char **argv) {
 			ERROR_LOG("can't set pthread's join state");
 		pthread_t id;
 
-		while (1) {
-			child_trans = libercat_accept_one(trans);
-			if (!child_trans) {
-				ERROR_LOG("accept_one failed!");
-				break;
+
+		if (mt_server) {
+			while (1) {
+				child_trans = libercat_accept_one(trans);
+				if (!child_trans) {
+					ERROR_LOG("accept_one failed!");
+					break;
+				}
+				pthread_create(&id, &attr_thr, handle_trans, child_trans);
 			}
-			pthread_create(&id, &attr_thr, handle_trans, child_trans);
+		} else {
+			child_trans = libercat_accept_one(trans);
+			TEST_Z(libercat_start_cm_thread(trans));
+			handle_trans(child_trans);
 		}
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 	} else { //client
 		TEST_Z(libercat_connect(trans));
 		handle_trans(trans);
