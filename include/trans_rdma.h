@@ -88,6 +88,7 @@ typedef void (*disconnect_callback_t) (libercat_trans_t *trans);
 struct libercat_trans {
 	enum { // FIXME: make volatile?
 		LIBERCAT_INIT,
+		LIBERCAT_LISTENING,
 		LIBERCAT_ADDR_RESOLVED,
 		LIBERCAT_ROUTE_RESOLVED,
 		LIBERCAT_CONNECT_REQUEST,
@@ -175,8 +176,9 @@ int libercat_init(libercat_trans_t **trans, libercat_trans_attr_t *attr);
 // server specific:
 int libercat_bind_server(libercat_trans_t *trans);
 libercat_trans_t *libercat_accept_one(libercat_trans_t *trans);
+int libercat_start_cm_thread(libercat_trans_t *trans);
 int libercat_finalize_accept(libercat_trans_t *trans);
-void libercat_destroy_trans(libercat_trans_t *libercat_trans);
+void libercat_destroy_trans(libercat_trans_t **ptrans);
 // do we want create/destroy + listen/shutdown, or can both be done in a single call?
 // if second we could have create/destroy shared with client, but honestly there's not much to share...
 // client

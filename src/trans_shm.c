@@ -283,7 +283,9 @@ static void libercat_destroy_buffer(libercat_trans_t *trans) {
  *
  * @param trans [INOUT] the trans to destroy
  */
-void libercat_destroy_trans(libercat_trans_t *trans) {
+void libercat_destroy_trans(libercat_trans_t **ptrans) {
+
+	libercat_trans_t *trans = *ptrans;
 
 	libercat_destroy_buffer(trans);
 
@@ -327,13 +329,13 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return ret;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(trans);
+		libercat_destroy_trans(&trans);
 		return ret;
 	}
 

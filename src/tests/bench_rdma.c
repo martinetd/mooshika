@@ -17,16 +17,18 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-#define CHUNK_SIZE 1024
-#define RECV_NUM 3
+#define CHUNK_SIZE 1024*1024
+#define RECV_NUM 2
+#define libercat_post_RW libercat_post_read
 
 #define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
 #define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
 
 struct datamr {
-	void *data;
 	struct ibv_mr *mr;
-	libercat_data_t *ackdata;
+	libercat_rloc_t *rloc;
+	libercat_data_t *data;
+	volatile int *count;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
@@ -43,7 +45,17 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 
 	pthread_mutex_lock(datamr->lock);
 	pthread_cond_signal(datamr->cond);
-	pthread_mutex_unlock(datamr->lock);		
+	pthread_mutex_unlock(datamr->lock);
+}
+
+void callback_read(libercat_trans_t *trans, void *arg) {
+	struct datamr *datamr = arg;
+
+	if (trans->state == LIBERCAT_CONNECTED)
+		TEST_Z(libercat_post_RW(trans, datamr->data, datamr->mr, datamr->rloc, callback_read, datamr));
+
+	*datamr->count += 1;
+	pthread_cond_signal(datamr->cond);
 }
 
 void print_help(char **argv) {
@@ -65,7 +77,8 @@ int main(int argc, char **argv) {
 
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
-	attr.rq_depth = RECV_NUM+2;
+	attr.rq_depth = 1;
+	attr.sq_depth = RECV_NUM+2; // RECV_NUM for read requets, one for the final wait_send, one to have a free one (post in a callback)
 	attr.addr.sa_in.sin_family = AF_INET;
 	attr.addr.sa_in.sin_port = htons(1235);
 //	attr.disconnect_callback = callback_disconnect;
@@ -129,11 +142,7 @@ int main(int argc, char **argv) {
 	if (trans->server) {
 		TEST_Z(libercat_bind_server(trans));
 		trans = libercat_accept_one(trans);
-
 		TEST_Z(libercat_start_cm_thread(trans));
-/* start_cm_thread or:
-		pthread_t id;
-		pthread_create(&id, NULL, (void * (*)(void*))libercat_accept_one, trans); */
 	} else { //client
 		TEST_Z(libercat_connect(trans));
 	}
@@ -157,20 +166,26 @@ int main(int argc, char **argv) {
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
 
-	libercat_data_t *rdata;
-	struct datamr datamr;
+	libercat_data_t **rdata;
+	struct datamr *datamr;
+	int i;
 
-	TEST_NZ(rdata = malloc(sizeof(libercat_data_t)));
-	rdata->data=rdmabuf; //+i*CHUNK_SIZE*sizeof(char);
-	rdata->max_size=CHUNK_SIZE*sizeof(char);
-	datamr.data = (void*)&(rdata);
-	datamr.mr = mr;
-	datamr.ackdata = ackdata; 
-	datamr.lock = &lock;
-	datamr.cond = &cond;
+	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(libercat_data_t*)));
+	TEST_NZ(datamr = malloc(RECV_NUM*sizeof(struct datamr)));
+
+	for (i=0; i < RECV_NUM; i++) {
+		TEST_NZ(rdata[i] = malloc(sizeof(libercat_data_t)));
+		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
+		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
+		rdata[i]->size=CHUNK_SIZE*sizeof(char);
+		datamr[i].data = rdata[i];
+		datamr[i].mr = mr;
+		datamr[i].lock = &lock;
+		datamr[i].cond = &cond;
+	}
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(libercat_post_recv(trans, &rdata, mr, callback_recv, &datamr));
+	TEST_Z(libercat_post_recv(trans, &(rdata[0]), mr, callback_recv, &(datamr[0]))); // post only one, others will be used for reads
 
 	if (trans->server) {
 		TEST_Z(libercat_finalize_accept(trans));
@@ -189,31 +204,26 @@ int main(int argc, char **argv) {
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive rloc
 
 		TEST_NZ(rloc = malloc(sizeof(libercat_rloc_t)));
-		memcpy(rloc, rdata->data, sizeof(libercat_rloc_t));
+		memcpy(rloc, (rdata[0])->data, sizeof(libercat_rloc_t));
 		printf("got rloc! key: %u, addr: %lu, size: %d\n", rloc->rkey, rloc->raddr, rloc->size);
 
-		memcpy(wdata->data, "roses are red", 14);
-		wdata->size = 14;
+		volatile int count = 0;
 
-		TEST_Z(libercat_post_write(trans, wdata, mr, rloc, callback_recv, &datamr));
+		for (i=0; i < RECV_NUM; i++) {
+			datamr[i].rloc = rloc;
+			datamr[i].count = &count;
+			TEST_Z(libercat_post_RW(trans, rdata[i], mr, rloc, callback_read, &(datamr[i])));
+		}
 
-		printf("waiting for write to finish\n");
-		TEST_Z(pthread_cond_wait(&cond, &lock)); // write done
+		while (count < 10000) {
+			pthread_cond_wait(&cond, &lock);
+			if (count%100 == 0)
+				printf("count: %d\n", count);
+		}
 
-		TEST_Z(libercat_post_recv(trans, &rdata, mr, callback_recv, &datamr));
-		TEST_Z(libercat_post_send(trans, wdata, mr, NULL, NULL)); // ack to say we're done
+		printf("count: %d\n", count);
 
-		printf("waiting for something to be ready to read\n");
-		TEST_Z(pthread_cond_wait(&cond, &lock));
-
-		wdata->size=17;
-		TEST_Z(libercat_post_read(trans, wdata, mr, rloc, callback_recv, &datamr));
-
-		printf("wait for read to finish\n");
-		TEST_Z(pthread_cond_wait(&cond, &lock));
-
-		printf("%s\n", wdata->data);
-
+		wdata->size = 1;
 		TEST_Z(libercat_wait_send(trans, wdata, mr)); // ack - other can quit
 
 
@@ -224,24 +234,31 @@ int main(int argc, char **argv) {
 		wdata->size = sizeof(libercat_rloc_t);
 		libercat_post_send(trans, wdata, mr, NULL, NULL);
 
+void *write_thread(libercat_data_t *data) {
+	int i = 0;
+
+	srand(42);
+
+	while (1) {
+		i = (i+13)%data->max_size;
+		data->data[i] = (char) rand();
+	}
+
+	return NULL;
+
+}
+
+		pthread_t id;
+		pthread_create(&id, NULL, (void*(*)(void*)) write_thread, ackdata);
+	
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)
-
-		printf("%s\n", ackdata->data);
-
-		TEST_Z(libercat_post_recv(trans, &rdata, mr, callback_recv, &datamr));
-
-		memcpy(ackdata->data, "violets are blue", 17);
-		TEST_Z(libercat_post_send(trans, wdata, mr, NULL, NULL)); // say we've got something to read
-
-		printf("waiting for server to be done\n");
-		TEST_Z(pthread_cond_wait(&cond, &lock));
 
 	}
 	pthread_mutex_unlock(&lock);
 
+
 	libercat_destroy_trans(&trans);
-	libercat_destroy_trans(&trans); // check that double_destroy works
 
 	return 0;
 }
