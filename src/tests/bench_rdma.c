@@ -18,6 +18,7 @@
 #include "trans_rdma.h"
 
 #define CHUNK_SIZE 1024*1024
+#define SEND_COUNT 10000
 #define RECV_NUM 2
 #define libercat_post_RW libercat_post_read
 
@@ -51,7 +52,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 void callback_read(libercat_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
 
-	if (trans->state == LIBERCAT_CONNECTED)
+	if (trans->state == LIBERCAT_CONNECTED && *datamr->count < SEND_COUNT)
 		TEST_Z(libercat_post_RW(trans, datamr->data, datamr->mr, datamr->rloc, callback_read, datamr));
 
 	*datamr->count += 1;
@@ -177,7 +178,6 @@ int main(int argc, char **argv) {
 		TEST_NZ(rdata[i] = malloc(sizeof(libercat_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
 		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
-		rdata[i]->size=CHUNK_SIZE*sizeof(char);
 		datamr[i].data = rdata[i];
 		datamr[i].mr = mr;
 		datamr[i].lock = &lock;
@@ -210,12 +210,13 @@ int main(int argc, char **argv) {
 		volatile int count = 0;
 
 		for (i=0; i < RECV_NUM; i++) {
+			rdata[i]->size=CHUNK_SIZE*sizeof(char);
 			datamr[i].rloc = rloc;
 			datamr[i].count = &count;
 			TEST_Z(libercat_post_RW(trans, rdata[i], mr, rloc, callback_read, &(datamr[i])));
 		}
 
-		while (count < 10000) {
+		while (count < SEND_COUNT) {
 			pthread_cond_wait(&cond, &lock);
 			if (count%100 == 0)
 				printf("count: %d\n", count);
@@ -224,8 +225,8 @@ int main(int argc, char **argv) {
 		printf("count: %d\n", count);
 
 		wdata->size = 1;
-		TEST_Z(libercat_wait_send(trans, wdata, mr)); // ack - other can quit
-
+		TEST_Z(libercat_post_send(trans, wdata, mr, NULL, NULL)); // ack - other can quit
+		usleep(10000); //FIXME: wait till last work request is done. cannot use wait_send because the other will get the send before we get our ack, so they might disconnect and our threads might fail before we get our WC that would unstuck us.
 
 	} else {
 		rloc = libercat_make_rloc(mr, (uint64_t)ackdata->data, ackdata->max_size);
