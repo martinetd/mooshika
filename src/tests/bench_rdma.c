@@ -234,23 +234,6 @@ int main(int argc, char **argv) {
 		wdata->size = sizeof(libercat_rloc_t);
 		libercat_post_send(trans, wdata, mr, NULL, NULL);
 
-void *write_thread(libercat_data_t *data) {
-	int i = 0;
-
-	srand(42);
-
-	while (1) {
-		i = (i+13)%data->max_size;
-		data->data[i] = (char) rand();
-	}
-
-	return NULL;
-
-}
-
-		pthread_t id;
-		pthread_create(&id, NULL, (void*(*)(void*)) write_thread, ackdata);
-	
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)
 
