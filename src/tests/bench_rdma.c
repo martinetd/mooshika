@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
 
 	int option_index = 0;
 	int op;
-	while ((op = getopt_long(argc, argv, "@hvsc:p:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvsS:c:p:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -116,7 +116,11 @@ int main(int argc, char **argv) {
 				break;
 			case 's':
 				attr.server = 10;
-				inet_pton(AF_INET, "0.0.0.0", &((struct sockaddr_in*) &attr.addr)->sin_addr);
+				inet_pton(AF_INET, "0.0.0.0", &attr.addr.sa_in.sin_addr);
+				break;
+			case 'S':
+				attr.server = 10;
+				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
 				break;
 			case 'p':
 				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));

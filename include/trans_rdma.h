@@ -170,6 +170,8 @@ int libercat_dereg_mr(struct ibv_mr *mr);
 
 libercat_rloc_t *libercat_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size);
 
+void libercat_print_devinfo(libercat_trans_t *trans);
+
 
 int libercat_init(libercat_trans_t **trans, libercat_trans_attr_t *attr);
 
@@ -184,10 +186,4 @@ void libercat_destroy_trans(libercat_trans_t **ptrans);
 // client
 int libercat_connect(libercat_trans_t *trans);
 int libercat_finalize_connect(libercat_trans_t *trans);
-
-
-
-
-
-
 

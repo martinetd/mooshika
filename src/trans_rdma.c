@@ -121,6 +121,17 @@ libercat_rloc_t *libercat_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t s
 	return rloc;
 }
 
+void libercat_print_devinfo(libercat_trans_t *trans) {
+	struct ibv_device_attr device_attr;
+	ibv_query_device(trans->cm_id->verbs, &device_attr);
+	uint64_t node_guid = ntohll(device_attr.node_guid);
+	printf("guid: %04x:%04x:%04x:%04x\n",
+		(unsigned) (node_guid >> 48) & 0xffff,
+		(unsigned) (node_guid >> 32) & 0xffff,
+		(unsigned) (node_guid >> 16) & 0xffff,
+		(unsigned) (node_guid >>  0) & 0xffff);
+}
+
 /* INIT/SHUTDOWN FUNCTIONS */
 
 /**
