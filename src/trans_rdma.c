@@ -1001,7 +1001,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
 	do {
 		for (i = 0, rctx = trans->recv_buf;
 		     i < trans->rq_depth;
-		     i++, rctx++)
+		     i++, rctx = (libercat_ctx_t*)((uint8_t*)rctx + sizeof(libercat_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
 			if (!rctx->used)
 				break;
 
@@ -1065,7 +1065,7 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	do {
 		for (i = 0, wctx = (libercat_ctx_t *)trans->send_buf;
 		     i < trans->sq_depth;
-		     i++, wctx = (libercat_ctx_t *)((uint8_t *)wctx + sizeof(libercat_ctx_t)))
+		     i++, wctx = (libercat_ctx_t*)((uint8_t*)wctx + sizeof(libercat_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
 			if (!wctx->used)
 				break;
 
