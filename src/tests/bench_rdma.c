@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
 	}
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(libercat_post_recv(trans, &(rdata[0]), mr, callback_recv, &(datamr[0]))); // post only one, others will be used for reads
+	TEST_Z(libercat_post_recv(trans, &(rdata[0]), 1, mr, callback_recv, &(datamr[0]))); // post only one, others will be used for reads
 
 	if (trans->server) {
 		TEST_Z(libercat_finalize_accept(trans));
@@ -229,7 +229,7 @@ int main(int argc, char **argv) {
 		printf("count: %d\n", count);
 
 		wdata->size = 1;
-		TEST_Z(libercat_post_send(trans, wdata, mr, NULL, NULL)); // ack - other can quit
+		TEST_Z(libercat_post_send(trans, &wdata, 1, mr, NULL, NULL)); // ack - other can quit
 		usleep(10000); //FIXME: wait till last work request is done. cannot use wait_send because the other will get the send before we get our ack, so they might disconnect and our threads might fail before we get our WC that would unstuck us.
 
 	} else {
@@ -237,7 +237,7 @@ int main(int argc, char **argv) {
 
 		memcpy(wdata->data, rloc, sizeof(libercat_rloc_t));
 		wdata->size = sizeof(libercat_rloc_t);
-		libercat_post_send(trans, wdata, mr, NULL, NULL);
+		libercat_post_send(trans, &wdata, 1, mr, NULL, NULL);
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)

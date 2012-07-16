@@ -110,7 +110,9 @@ struct libercat_trans {
 	void *private_data;
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
+	int max_send_sge;		/**< Maximum number of s/g elements per send */
 	int rq_depth;			/**< The depth of the Receive Queue. */
+	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	int server;			/**< 0 if client, number of connections to accept on server */
 	libercat_ctx_t *send_buf;	/**< pointer to actual context data */
@@ -126,7 +128,9 @@ struct libercat_trans_attr {
 	int server;			/**< 0 if client, number of connections to accept on server */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
+	int max_send_sge;		/**< Maximum number of s/g elements per send */
 	int rq_depth;			/**< The depth of the Receive Queue. */
+	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	struct ibv_pd *pd;		/**< Protection Domain pointer */
 };
@@ -146,12 +150,12 @@ struct libercat_rloc {
 };
 
 
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
 
 
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **datap, struct ibv_mr *mr);
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr);
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr);
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr);
 
 // server side
 int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);

@@ -593,7 +593,8 @@ int libercat_connect(libercat_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+//FIXME num_sge
 	libercat_ctx_t *rctx;
 	libercat_sem_t *sem;
 	libercat_list_t *elem;
@@ -650,7 +651,8 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+	libercat_data_t *data = *pdata;
 	libercat_ctx_t *wctx;
 	libercat_sem_t *sem;
 	libercat_list_t *elem;
@@ -717,12 +719,12 @@ static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr) {
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_recv(trans, pdata, mr, libercat_wait_callback, &lock);
+	ret = libercat_post_recv(trans, pdata, num_sge, mr, libercat_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -741,12 +743,12 @@ int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr) {
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_send(trans, data, mr, libercat_wait_callback, &lock);
+	ret = libercat_post_send(trans, pdata, num_sge, mr, libercat_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
