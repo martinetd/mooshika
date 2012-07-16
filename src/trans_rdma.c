@@ -530,6 +530,9 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
 	trans->disconnect_callback = attr->disconnect_callback;
 
+	if (attr->pd)
+		trans->pd = attr->pd;
+
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
@@ -591,7 +594,8 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
 
 	INFO_LOG("trans: %p", trans);
 
-	trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
+	if (!trans->pd)
+		trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
 	if (!trans->pd) {
 		ret = errno;
 		ERROR_LOG("ibv_alloc_pd failed: %s (%d)", strerror(ret), ret);

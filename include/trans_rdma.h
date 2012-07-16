@@ -128,6 +128,7 @@ struct libercat_trans_attr {
 	int sq_depth;			/**< The depth of the Send Queue */
 	int rq_depth;			/**< The depth of the Receive Queue. */
 	sockaddr_union_t addr;		/**< The remote peer's address */
+	struct ibv_pd *pd;		/**< Protection Domain pointer */
 };
 
 
