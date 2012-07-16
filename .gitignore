@@ -8,7 +8,6 @@ doxygen
 m4
 \#*\#
 libercat.spec
-rcat
 cscope*
 Makefile
 Makefile.in

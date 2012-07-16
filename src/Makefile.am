@@ -8,13 +8,21 @@ libercat_la_LDFLAGS = -version-info 0:1:0
 libercat_shm_la_SOURCES = trans_shm.c
 libercat_shm_la_LDFLAGS = -version-info 0:1:0
 
-bin_PROGRAMS = rcat
+bin_PROGRAMS = rcat rmitm
 rcat_SOURCES = rcat.c
 rcat_LDADD = -lrdmacm -libverbs -lpthread
 if USE_SHM
 rcat_LDADD += libercat_shm.la
 else
 rcat_LDADD += libercat.la
+endif
+
+rmitm_SOURCES = rmitm.c
+rmitm_LDADD = -lrdmacm -libverbs -lpthread
+if USE_SHM
+rmitm_LDADD += libercat_shm.la
+else
+rmitm_LDADD += libercat.la
 endif
 
 pkgconfigdir=$(libdir)/pkgconfig
