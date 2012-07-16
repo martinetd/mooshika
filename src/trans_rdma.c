@@ -57,16 +57,15 @@
 struct libercat_ctx {
 	int used;			/**< 0 if we can use it for a new recv/send */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
-	uint32_t len;			/**< size of our own buffer */
 	struct rdmactx *next;		/**< next context */
-	libercat_data_t *data;
+	libercat_data_t **pdata;
 	ctx_callback_t callback;
-	struct ibv_sge sge;
 	union {
 		struct ibv_recv_wr rwr;
 		struct ibv_send_wr wwr;
 	} wr;
 	void *callback_arg;
+	struct ibv_sge sg_list[0]; 		/**< this is actually an array. note that when you malloc you have to add its size */
 };
 
 /* UTILITY FUNCTIONS */
@@ -295,12 +294,12 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			INFO_LOG("WC_RECV");
 
 			if (wc.wc_flags & IBV_WC_WITH_IMM) {
-				//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
+				//FIXME ctx->pdata[0]->imm_data = ntohl(wc.imm_data);
 				ERROR_LOG("imm_data: %d", ntohl(wc.imm_data));
 			}
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
-			ctx->data->size = wc.byte_len;
+			(ctx->pdata[0])->size = wc.byte_len; //FIXME num_sge
 			if (ctx->callback)
 				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
@@ -527,7 +526,9 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	trans->server = attr->server;
 	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
 	trans->sq_depth = attr->sq_depth ? attr->sq_depth : 10;
+	trans->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
 	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
+	trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 	trans->disconnect_callback = attr->disconnect_callback;
 
 	if (attr->pd)
@@ -564,8 +565,8 @@ static int libercat_create_qp(libercat_trans_t *trans, struct rdma_cm_id *cm_id)
 	memset(&init_attr, 0, sizeof(init_attr));
 	init_attr.cap.max_send_wr = trans->sq_depth;
 	init_attr.cap.max_recv_wr = trans->rq_depth;
-	init_attr.cap.max_recv_sge = 1;
-	init_attr.cap.max_send_sge = 1;
+	init_attr.cap.max_recv_sge = trans->max_recv_sge;
+	init_attr.cap.max_send_sge = trans->max_send_sge;
 	init_attr.cap.max_inline_data = 0; // change if IMM
 	init_attr.qp_type = IBV_QPT_RC;
 	init_attr.send_cq = trans->cq;
@@ -642,19 +643,19 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
  * libercat_setup_buffer
  */
 static int libercat_setup_buffer(libercat_trans_t *trans) {
-	trans->recv_buf = malloc(trans->rq_depth * sizeof(libercat_ctx_t));
+	trans->recv_buf = malloc(trans->rq_depth * sizeof(libercat_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
 	if (!trans->recv_buf) {
 		ERROR_LOG("couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
-	memset(trans->recv_buf, 0, trans->rq_depth * sizeof(libercat_ctx_t));
+	memset(trans->recv_buf, 0, trans->rq_depth * sizeof(libercat_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
 
-	trans->send_buf = malloc(trans->sq_depth * sizeof(libercat_ctx_t));
+	trans->send_buf = malloc(trans->sq_depth * sizeof(libercat_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
 	if (!trans->send_buf) {
 		ERROR_LOG("couldn't malloc trans->send_buf");
 		return ENOMEM;
 	}
-	memset(trans->send_buf, 0, trans->sq_depth * sizeof(libercat_ctx_t));
+	memset(trans->send_buf, 0, trans->sq_depth * sizeof(libercat_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
 
 	return 0;
 }
@@ -990,7 +991,7 @@ int libercat_connect(libercat_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting recv");
 	libercat_ctx_t *rctx;
 	int i, ret;
@@ -1015,20 +1016,22 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 	pthread_mutex_unlock(&trans->lock);
 
 	rctx->used = 1;
-	rctx->len = (*pdata)->max_size;
 	rctx->pos = 0;
 	rctx->next = NULL;
 	rctx->callback = callback;
 	rctx->callback_arg = callback_arg;
-	rctx->data = *pdata;
+	rctx->pdata = pdata;
 
-	rctx->sge.addr = (uintptr_t) rctx->data->data;
-	rctx->sge.length = rctx->len;
-	rctx->sge.lkey = mr->lkey;
 	rctx->wr.rwr.next = NULL;
 	rctx->wr.rwr.wr_id = (uint64_t)rctx;
-	rctx->wr.rwr.sg_list = &rctx->sge;
-	rctx->wr.rwr.num_sge = 1;
+	rctx->wr.rwr.sg_list = rctx->sg_list;
+	rctx->wr.rwr.num_sge = num_sge;
+
+	for (i=0; i < num_sge; i++) {
+		rctx->sg_list[i].addr = (uintptr_t) (rctx->pdata[i])->data;
+		rctx->sg_list[i].length = rctx->pdata[i]->max_size;
+		rctx->sg_list[i].lkey = mr->lkey;
+	}
 
 	ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
 	if (ret) {
@@ -1039,7 +1042,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
 	return 0;
 }
 
-static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcode opcode, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcode opcode, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting a send with op %d", opcode);
 	libercat_ctx_t *wctx;
 	int i, ret;
@@ -1049,10 +1052,6 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 		if (!rloc) {
 			ERROR_LOG("Cannot do rdma without a remote location!");
 			return EINVAL;
-		}
-		if (data->size > rloc->size) {
-			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
-			return EMSGSIZE;
 		}
 	} else if (opcode == IBV_WR_SEND || opcode == IBV_WR_SEND_WITH_IMM) {
 	} else {
@@ -1081,26 +1080,33 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	pthread_mutex_unlock(&trans->lock);
 
 	wctx->used = 1;
-	wctx->len = data->size;
 	wctx->pos = 0;
 	wctx->next = NULL;
 	wctx->callback = callback;
 	wctx->callback_arg = callback_arg;
-	wctx->data = data;
+	wctx->pdata = pdata;
 
-	wctx->sge.addr = (uintptr_t)wctx->data->data;
-	wctx->sge.length = wctx->len;
-	wctx->sge.lkey = mr->lkey;
 	wctx->wr.wwr.next = NULL;
 	wctx->wr.wwr.wr_id = (uint64_t)wctx;
 	wctx->wr.wwr.opcode = opcode;
 //FIXME	wctx->wr.wwr.imm_data = htonl(data->imm_data);
 	wctx->wr.wwr.send_flags = IBV_SEND_SIGNALED;
-	wctx->wr.wwr.sg_list = &wctx->sge;
-	wctx->wr.wwr.num_sge = 1;
+	wctx->wr.wwr.sg_list = wctx->sg_list;
+	wctx->wr.wwr.num_sge = num_sge;
 	if (rloc) {
 		wctx->wr.wwr.wr.rdma.rkey = rloc->rkey;
 		wctx->wr.wwr.wr.rdma.remote_addr = rloc->raddr;
+	}
+
+	for (i=0; i < num_sge; i++) {
+		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i])->data;
+		wctx->sg_list[i].length = (wctx->pdata[i])->size;
+		wctx->sg_list[i].lkey = mr->lkey;
+
+		if (rloc && wctx->pdata[i]->size > rloc->size) {
+			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
+			return EMSGSIZE;
+		}
 	}
 
 	ret = ibv_post_send(trans->qp, &wctx->wr.wwr, &trans->bad_send_wr);
@@ -1123,8 +1129,8 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_SEND, data, mr, NULL, callback, callback_arg);
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+	return libercat_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, callback_arg);
 }
 
 /**
@@ -1146,12 +1152,12 @@ static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct ibv_mr *mr) {
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_recv(trans, pdata, mr, libercat_wait_callback, &lock);
+	ret = libercat_post_recv(trans, pdata, num_sge, mr, libercat_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1170,12 +1176,12 @@ int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, struct 
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr) {
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_send(trans, data, mr, libercat_wait_callback, &lock);
+	ret = libercat_post_send(trans, pdata, num_sge, mr, libercat_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1193,11 +1199,11 @@ int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *data, struct ib
 
 
 int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_RDMA_READ, data, mr, rloc, callback, callback_arg);
+	return libercat_post_send_generic(trans, IBV_WR_RDMA_READ, &data, 1, mr, rloc, callback, callback_arg);
 }
 
 int libercat_post_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_RDMA_WRITE, data, mr, rloc, callback, callback_arg);
+	return libercat_post_send_generic(trans, IBV_WR_RDMA_WRITE, &data, 1, mr, rloc, callback, callback_arg);
 }
 
 int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {

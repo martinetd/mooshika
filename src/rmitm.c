@@ -52,7 +52,7 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 		return;
 	}
 
-	libercat_post_recv(priv->o_trans, &datalock->data, priv->mr, callback_recv, datalock);
+	libercat_post_recv(priv->o_trans, &datalock->data, 1, priv->mr, callback_recv, datalock);
 }
 
 void callback_disconnect(libercat_trans_t *trans) {
@@ -79,7 +79,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 	fwrite("\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11", 16, sizeof(char), priv->logfd);
 	fflush(priv->logfd);
 
-	libercat_post_send(priv->o_trans, data, priv->mr, callback_send, datalock);
+	libercat_post_send(priv->o_trans, &data, 1, priv->mr, callback_send, datalock);
 }
 
 void print_help(char **argv) {
@@ -98,7 +98,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(libercat_post_recv(trans, &(priv->first_rdata[i]), mr, callback_recv, &(priv->first_datalock[i])));
+		TEST_Z(libercat_post_recv(trans, &(priv->first_rdata[i]), 1, mr, callback_recv, &(priv->first_datalock[i])));
 
 
 	if (trans->server) {

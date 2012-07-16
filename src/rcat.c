@@ -26,7 +26,7 @@
 struct datamr {
 	void *data;
 	struct ibv_mr *mr;
-	libercat_data_t *ackdata;
+	libercat_data_t **ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
@@ -58,10 +58,10 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 		write(1, (char *)(*pdata)->data, (*pdata)->size);
 		fflush(stdout);
 
-		libercat_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
-		libercat_post_send(trans, datamr->ackdata, datamr->mr, NULL, NULL);
+		libercat_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
+		libercat_post_send(trans, datamr->ackdata, 1, datamr->mr, NULL, NULL);
 	} else {
-		libercat_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
+		libercat_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
 
 		pthread_mutex_lock(datamr->lock);
 		pthread_cond_signal(datamr->cond);
@@ -112,10 +112,10 @@ void* handle_trans(void *arg) {
 		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
 		datamr[i].data = (void*)&(rdata[i]);
 		datamr[i].mr = mr;
-		datamr[i].ackdata = ackdata; 
+		datamr[i].ackdata = &ackdata; 
 		datamr[i].lock = &lock;
 		datamr[i].cond = &cond;
-		TEST_Z(libercat_post_recv(trans, &(rdata[i]), mr, callback_recv, &(datamr[i])));
+		TEST_Z(libercat_post_recv(trans, &(rdata[i]), 1, mr, callback_recv, &(datamr[i])));
 	}
 
 	trans->private_data = datamr;
@@ -150,7 +150,7 @@ void* handle_trans(void *arg) {
 			break;
 
 		pthread_mutex_lock(&lock);
-		TEST_Z(libercat_post_send(trans, wdata, mr, NULL, NULL));
+		TEST_Z(libercat_post_send(trans, &wdata, 1, mr, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	
