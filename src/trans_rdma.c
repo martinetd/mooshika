@@ -1022,16 +1022,16 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_
 	rctx->callback_arg = callback_arg;
 	rctx->pdata = pdata;
 
-	rctx->wr.rwr.next = NULL;
-	rctx->wr.rwr.wr_id = (uint64_t)rctx;
-	rctx->wr.rwr.sg_list = rctx->sg_list;
-	rctx->wr.rwr.num_sge = num_sge;
-
 	for (i=0; i < num_sge; i++) {
 		rctx->sg_list[i].addr = (uintptr_t) (rctx->pdata[i]).data;
 		rctx->sg_list[i].length = rctx->pdata[i].max_size;
 		rctx->sg_list[i].lkey = mr->lkey;
 	}
+
+	rctx->wr.rwr.next = NULL;
+	rctx->wr.rwr.wr_id = (uint64_t)rctx;
+	rctx->wr.rwr.sg_list = rctx->sg_list;
+	rctx->wr.rwr.num_sge = num_sge;
 
 	ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
 	if (ret) {
@@ -1086,6 +1086,21 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	wctx->callback_arg = callback_arg;
 	wctx->pdata = pdata;
 
+	for (i=0; i < num_sge; i++) {
+		if (wctx->pdata[i].size == 0) {
+			num_sge = i; // only send up to previous sg
+			break;
+		}
+		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i]).data;
+		wctx->sg_list[i].length = (wctx->pdata[i]).size;
+		wctx->sg_list[i].lkey = mr->lkey;
+
+		if (rloc && wctx->pdata[i].size > rloc->size) {
+			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
+			return EMSGSIZE;
+		}
+	}
+
 	wctx->wr.wwr.next = NULL;
 	wctx->wr.wwr.wr_id = (uint64_t)wctx;
 	wctx->wr.wwr.opcode = opcode;
@@ -1096,17 +1111,6 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	if (rloc) {
 		wctx->wr.wwr.wr.rdma.rkey = rloc->rkey;
 		wctx->wr.wwr.wr.rdma.remote_addr = rloc->raddr;
-	}
-
-	for (i=0; i < num_sge; i++) {
-		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i]).data;
-		wctx->sg_list[i].length = (wctx->pdata[i]).size;
-		wctx->sg_list[i].lkey = mr->lkey;
-
-		if (rloc && wctx->pdata[i].size > rloc->size) {
-			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
-			return EMSGSIZE;
-		}
 	}
 
 	ret = ibv_post_send(trans->qp, &wctx->wr.wwr, &trans->bad_send_wr);
