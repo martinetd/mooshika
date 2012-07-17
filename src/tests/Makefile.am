@@ -1,6 +1,6 @@
 AM_CFLAGS = -g -Wall -Werror -I$(srcdir)/../../include -I$(srcdir)/..
 
-bin_PROGRAMS = read_write bench_rdma
+bin_PROGRAMS = read_write bench_rdma nfsv4_client
 
 read_write_SOURCES = read_write.c
 read_write_LDADD = -lrdmacm -libverbs -lpthread
@@ -18,4 +18,8 @@ else
 bench_rdma_LDADD += ../libercat.la
 endif
 
+
+nfsv4_client_SOURCES = nfsv4_client.c
+nfsv4_client_LDADD = -lrdmacm -libverbs -lpthread
+nfsv4_client_LDADD += ../libercat.la
 
