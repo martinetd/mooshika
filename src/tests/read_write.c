@@ -174,7 +174,7 @@ int main(int argc, char **argv) {
 	datamr.cond = &cond;
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(libercat_post_recv(trans, &rdata, 1, mr, callback_recv, &datamr));
+	TEST_Z(libercat_post_recv(trans, rdata, 1, mr, callback_recv, &datamr));
 
 	if (trans->server) {
 		TEST_Z(libercat_finalize_accept(trans));
@@ -204,8 +204,8 @@ int main(int argc, char **argv) {
 		printf("waiting for write to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // write done
 
-		TEST_Z(libercat_post_recv(trans, &rdata, 1, mr, callback_recv, &datamr));
-		TEST_Z(libercat_post_send(trans, &wdata, 1, mr, NULL, NULL)); // ack to say we're done
+		TEST_Z(libercat_post_recv(trans, rdata, 1, mr, callback_recv, &datamr));
+		TEST_Z(libercat_post_send(trans, wdata, 1, mr, NULL, NULL)); // ack to say we're done
 
 		printf("waiting for something to be ready to read\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));
@@ -218,7 +218,7 @@ int main(int argc, char **argv) {
 
 		printf("%s\n", wdata->data);
 
-		TEST_Z(libercat_wait_send(trans, &wdata, 1, mr)); // ack - other can quit
+		TEST_Z(libercat_wait_send(trans, wdata, 1, mr)); // ack - other can quit
 
 
 	} else {
@@ -226,17 +226,17 @@ int main(int argc, char **argv) {
 
 		memcpy(wdata->data, rloc, sizeof(libercat_rloc_t));
 		wdata->size = sizeof(libercat_rloc_t);
-		libercat_post_send(trans, &wdata, 1, mr, NULL, NULL);
+		libercat_post_send(trans, wdata, 1, mr, NULL, NULL);
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)
 
 		printf("%s\n", ackdata->data);
 
-		TEST_Z(libercat_post_recv(trans, &rdata, 1, mr, callback_recv, &datamr));
+		TEST_Z(libercat_post_recv(trans, rdata, 1, mr, callback_recv, &datamr));
 
 		memcpy(ackdata->data, "violets are blue", 17);
-		TEST_Z(libercat_post_send(trans, &wdata, 1, mr, NULL, NULL)); // say we've got something to read
+		TEST_Z(libercat_post_send(trans, wdata, 1, mr, NULL, NULL)); // say we've got something to read
 
 		printf("waiting for server to be done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));

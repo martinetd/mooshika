@@ -58,7 +58,7 @@ struct libercat_ctx {
 	int used;			/**< 0 if we can use it for a new recv/send */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
 	struct rdmactx *next;		/**< next context */
-	libercat_data_t **pdata;
+	libercat_data_t *pdata;
 	ctx_callback_t callback;
 	union {
 		struct ibv_recv_wr rwr;
@@ -299,7 +299,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			}
 
 			ctx = (libercat_ctx_t *)wc.wr_id;
-			(ctx->pdata[0])->size = wc.byte_len; //FIXME num_sge
+			(ctx->pdata[0]).size = wc.byte_len; //FIXME num_sge
 			if (ctx->callback)
 				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
@@ -984,14 +984,14 @@ int libercat_connect(libercat_trans_t *trans) {
  *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans        [IN]
- * @param pdata        [OUT] the data buffer to be filled with received data //FIXME: isn't a *data enough?
+ * @param pdata        [OUT] the data buffer to be filled with received data
  * @param mr           [IN]  the mr in which the data lives
  * @param callback     [IN]  function that'll be called when done
  * @param callback_arg [IN]  argument to give to the callback
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting recv");
 	libercat_ctx_t *rctx;
 	int i, ret;
@@ -1028,8 +1028,8 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
 	rctx->wr.rwr.num_sge = num_sge;
 
 	for (i=0; i < num_sge; i++) {
-		rctx->sg_list[i].addr = (uintptr_t) (rctx->pdata[i])->data;
-		rctx->sg_list[i].length = rctx->pdata[i]->max_size;
+		rctx->sg_list[i].addr = (uintptr_t) (rctx->pdata[i]).data;
+		rctx->sg_list[i].length = rctx->pdata[i].max_size;
 		rctx->sg_list[i].lkey = mr->lkey;
 	}
 
@@ -1042,7 +1042,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
 	return 0;
 }
 
-static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcode opcode, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcode opcode, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting a send with op %d", opcode);
 	libercat_ctx_t *wctx;
 	int i, ret;
@@ -1099,11 +1099,11 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	}
 
 	for (i=0; i < num_sge; i++) {
-		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i])->data;
-		wctx->sg_list[i].length = (wctx->pdata[i])->size;
+		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i]).data;
+		wctx->sg_list[i].length = (wctx->pdata[i]).size;
 		wctx->sg_list[i].lkey = mr->lkey;
 
-		if (rloc && wctx->pdata[i]->size > rloc->size) {
+		if (rloc && wctx->pdata[i].size > rloc->size) {
 			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
 			return EMSGSIZE;
 		}
@@ -1129,7 +1129,7 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	return libercat_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, callback_arg);
 }
 
@@ -1152,7 +1152,7 @@ static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -1176,7 +1176,7 @@ int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -1198,20 +1198,20 @@ int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num
 // server specific:
 
 
-int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_RDMA_READ, &data, 1, mr, rloc, callback, callback_arg);
+int libercat_post_read(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return libercat_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, 1, mr, rloc, callback, callback_arg);
 }
 
-int libercat_post_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_RDMA_WRITE, &data, 1, mr, rloc, callback, callback_arg);
+int libercat_post_write(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return libercat_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, 1, mr, rloc, callback, callback_arg);
 }
 
-int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_read(trans, data, mr, rloc, libercat_wait_callback, &lock);
+	ret = libercat_post_read(trans, pdata, mr, rloc, libercat_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1223,12 +1223,12 @@ int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *data, struct ib
 }
 
 
-int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_write(trans, data, mr, rloc, libercat_wait_callback, &lock);
+	ret = libercat_post_write(trans, pdata, mr, rloc, libercat_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);

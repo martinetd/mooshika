@@ -24,9 +24,9 @@
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
 struct datamr {
-	void *data;
+	libercat_data_t *data;
 	struct ibv_mr *mr;
-	libercat_data_t **ackdata;
+	libercat_data_t *ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
@@ -52,10 +52,10 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 		return;
 	}
 
-	libercat_data_t **pdata = datamr->data;
+	libercat_data_t *pdata = datamr->data;
 
-	if ((*pdata)->size != 1 || (*pdata)->data[0] != '\0') {
-		write(1, (char *)(*pdata)->data, (*pdata)->size);
+	if (pdata->size != 1 || pdata->data[0] != '\0') {
+		write(1, (char *)pdata->data, pdata->size);
 		fflush(stdout);
 
 		libercat_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
@@ -110,12 +110,12 @@ void* handle_trans(void *arg) {
 		TEST_NZ(rdata[i] = malloc(sizeof(libercat_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
 		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
-		datamr[i].data = (void*)&(rdata[i]);
+		datamr[i].data = rdata[i];
 		datamr[i].mr = mr;
-		datamr[i].ackdata = &ackdata; 
+		datamr[i].ackdata = ackdata; 
 		datamr[i].lock = &lock;
 		datamr[i].cond = &cond;
-		TEST_Z(libercat_post_recv(trans, &(rdata[i]), 1, mr, callback_recv, &(datamr[i])));
+		TEST_Z(libercat_post_recv(trans, rdata[i], 1, mr, callback_recv, &(datamr[i])));
 	}
 
 	trans->private_data = datamr;
@@ -150,7 +150,7 @@ void* handle_trans(void *arg) {
 			break;
 
 		pthread_mutex_lock(&lock);
-		TEST_Z(libercat_post_send(trans, &wdata, 1, mr, NULL, NULL));
+		TEST_Z(libercat_post_send(trans, wdata, 1, mr, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	

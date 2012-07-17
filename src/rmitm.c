@@ -30,7 +30,7 @@ struct privatedata {
 	FILE *logfd;
 	libercat_trans_t *o_trans;
 	struct ibv_mr *mr;
-	libercat_data_t **first_rdata;
+	libercat_data_t *first_rdata;
 	struct datalock *first_datalock;
 	pthread_mutex_t *lock;
 	pthread_mutex_t *o_lock;
@@ -52,7 +52,7 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 		return;
 	}
 
-	libercat_post_recv(priv->o_trans, &datalock->data, 1, priv->mr, callback_recv, datalock);
+	libercat_post_recv(priv->o_trans, datalock->data, 4, priv->mr, callback_recv, datalock);
 }
 
 void callback_disconnect(libercat_trans_t *trans) {
@@ -79,7 +79,9 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 	fwrite("\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11", 16, sizeof(char), priv->logfd);
 	fflush(priv->logfd);
 
-	libercat_post_send(priv->o_trans, &data, 1, priv->mr, callback_send, datalock);
+	usleep(10000);
+
+	libercat_post_send(priv->o_trans, data, 1, priv->mr, callback_send, datalock);
 }
 
 void print_help(char **argv) {
@@ -98,8 +100,9 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(libercat_post_recv(trans, &(priv->first_rdata[i]), 1, mr, callback_recv, &(priv->first_datalock[i])));
+		TEST_Z(libercat_post_recv(trans, &priv->first_rdata[4*i], 4, mr, callback_recv, &(priv->first_datalock[i])));
 
+	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
 	if (trans->server) {
 		// (tell the other we're done and )wait for the other
@@ -155,12 +158,14 @@ int main(int argc, char **argv) {
 	s_attr.server = -1; // put an incorrect value to check if we're either client or server
 	c_attr.server = -1;
 	// sane values for optional or non-configurable elements
-	s_attr.rq_depth = RECV_NUM;
-	s_attr.sq_depth = RECV_NUM;
+	s_attr.rq_depth = RECV_NUM+1;
+	s_attr.sq_depth = RECV_NUM+1;
+	s_attr.max_recv_sge = 4;
 	s_attr.addr.sa_in.sin_family = AF_INET;
 	s_attr.disconnect_callback = callback_disconnect;
-	c_attr.rq_depth = RECV_NUM;
-	c_attr.sq_depth = RECV_NUM;
+	c_attr.rq_depth = RECV_NUM+1;
+	c_attr.sq_depth = RECV_NUM+1;
+	c_attr.max_recv_sge = 4;
 	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
 
@@ -265,18 +270,19 @@ int main(int argc, char **argv) {
 	TEST_NZ(mr = libercat_reg_mr(c_trans, rdmabuf, mr_size, IBV_ACCESS_LOCAL_WRITE));
 
 
-	libercat_data_t **rdata;
+	libercat_data_t *rdata;
 	struct datalock *datalock;
-	int i;
+	int i, j;
 
-	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(libercat_data_t*)));
-	TEST_NZ(datalock = malloc(RECV_NUM*sizeof(struct datalock)));
+	TEST_NZ(rdata = malloc(4*2*RECV_NUM*sizeof(libercat_data_t*)*sizeof(libercat_data_t)));
+	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
 
 	for (i=0; i < 2*RECV_NUM; i++) {
-		TEST_NZ(rdata[i] = malloc(sizeof(libercat_data_t)));
-		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
-		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
-		datalock[i].data = rdata[i];
+		for (j=0; j<4; j++) {
+			rdata[4*i+j].data=rdmabuf+(4*i+j)*CHUNK_SIZE*sizeof(char);
+			rdata[4*i+j].max_size=CHUNK_SIZE*sizeof(char);
+		}
+		datalock[i].data = &rdata[i];
 //		datalock[i].lock = &lock;
 //		datalock[i].cond = &cond;
 	}
@@ -324,8 +330,8 @@ int main(int argc, char **argv) {
 	free(s_priv->lock);
 	free(c_priv);
 	free(s_priv);
-	for (i=0; i<2*RECV_NUM; i++)
-		free(rdata[i]);
+/*	for (i=0; i<2*RECV_NUM; i++)
+		free(rdata[i]); */
 	free(rdata);
 	free(datalock);
 	free(rdmabuf);
