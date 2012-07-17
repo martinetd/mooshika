@@ -17,7 +17,7 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-#define CHUNK_SIZE 1024*1024
+#define CHUNK_SIZE 8*1024
 #define RECV_NUM 1
 
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)

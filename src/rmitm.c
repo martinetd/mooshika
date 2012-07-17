@@ -20,8 +20,9 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-#define CHUNK_SIZE 1024*1024
+#define CHUNK_SIZE 8*1024 // nfs page size
 #define RECV_NUM 4
+#define NUM_SGE 4
 
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
@@ -52,7 +53,7 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 		return;
 	}
 
-	libercat_post_recv(priv->o_trans, datalock->data, 4, priv->mr, callback_recv, datalock);
+	libercat_post_recv(priv->o_trans, datalock->data, NUM_SGE, priv->mr, callback_recv, datalock);
 }
 
 void callback_disconnect(libercat_trans_t *trans) {
@@ -76,7 +77,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 	libercat_data_t *data = datalock->data;
 
 	fwrite(data->data, data->size, sizeof(char), priv->logfd);
-	fwrite("\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11\11", 16, sizeof(char), priv->logfd);
+	fwrite("\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11", 0x10, sizeof(char), priv->logfd);
 	fflush(priv->logfd);
 
 	usleep(10000);
@@ -100,7 +101,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(libercat_post_recv(trans, &priv->first_rdata[4*i], 4, mr, callback_recv, &(priv->first_datalock[i])));
+		TEST_Z(libercat_post_recv(trans, &priv->first_rdata[NUM_SGE*i], NUM_SGE, mr, callback_recv, &(priv->first_datalock[i])));
 
 	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
@@ -160,12 +161,12 @@ int main(int argc, char **argv) {
 	// sane values for optional or non-configurable elements
 	s_attr.rq_depth = RECV_NUM+1;
 	s_attr.sq_depth = RECV_NUM+1;
-	s_attr.max_recv_sge = 4;
+	s_attr.max_recv_sge = NUM_SGE;
 	s_attr.addr.sa_in.sin_family = AF_INET;
 	s_attr.disconnect_callback = callback_disconnect;
 	c_attr.rq_depth = RECV_NUM+1;
 	c_attr.sq_depth = RECV_NUM+1;
-	c_attr.max_recv_sge = 4;
+	c_attr.max_recv_sge = NUM_SGE;
 	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
 
@@ -262,7 +263,7 @@ int main(int argc, char **argv) {
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 
-	const size_t mr_size = 2*(RECV_NUM+1)*CHUNK_SIZE*sizeof(char);
+	const size_t mr_size = 2*(RECV_NUM+1)*NUM_SGE*CHUNK_SIZE*sizeof(char);
 
 	TEST_NZ(rdmabuf = malloc(mr_size));
 	memset(rdmabuf, 0, mr_size);
@@ -274,15 +275,15 @@ int main(int argc, char **argv) {
 	struct datalock *datalock;
 	int i, j;
 
-	TEST_NZ(rdata = malloc(4*2*RECV_NUM*sizeof(libercat_data_t*)*sizeof(libercat_data_t)));
+	TEST_NZ(rdata = malloc(NUM_SGE*2*RECV_NUM*sizeof(libercat_data_t*)*sizeof(libercat_data_t)));
 	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
 
 	for (i=0; i < 2*RECV_NUM; i++) {
-		for (j=0; j<4; j++) {
-			rdata[4*i+j].data=rdmabuf+(4*i+j)*CHUNK_SIZE*sizeof(char);
-			rdata[4*i+j].max_size=CHUNK_SIZE*sizeof(char);
+		for (j=0; j<NUM_SGE; j++) {
+			rdata[NUM_SGE*i+j].data=rdmabuf+(NUM_SGE*i+j)*CHUNK_SIZE*sizeof(char);
+			rdata[NUM_SGE*i+j].max_size=CHUNK_SIZE*sizeof(char);
 		}
-		datalock[i].data = &rdata[i];
+		datalock[i].data = &rdata[NUM_SGE*i];
 //		datalock[i].lock = &lock;
 //		datalock[i].cond = &cond;
 	}
@@ -304,7 +305,7 @@ int main(int argc, char **argv) {
 	s_priv->mr             = mr;
 	TEST_NZ(s_priv->lock = malloc(sizeof(pthread_mutex_t)));
 	pthread_mutex_init(s_priv->lock, NULL);
-	c_priv->first_rdata    = rdata + RECV_NUM;
+	c_priv->first_rdata    = rdata + NUM_SGE*RECV_NUM;
 	c_priv->first_datalock = datalock + RECV_NUM;
 	c_priv->mr             = mr;
 	TEST_NZ(c_priv->lock = malloc(sizeof(pthread_mutex_t)));
