@@ -61,7 +61,7 @@
 
 struct libercat_ctx {
 	int used;
-	libercat_data_t *data;
+	libercat_data_t *pdata;
 	ctx_callback_t callback;
 	void *callback_arg;
 };
@@ -191,8 +191,8 @@ static void *libercat_send_thread(void *arg) {
 		if (sem->ctx_head) {
 			ctx = sem->ctx_head->ctx;
 			libercat_semop(trans, SHM_SEM, -1);
-			shm->shm->size = ctx->data->size;
-			memcpy(&shm->shm->data, ctx->data->data, ctx->data->size);
+			shm->shm->size = ctx->pdata->size;
+			memcpy(&shm->shm->data, ctx->pdata->data, ctx->pdata->size);
 			libercat_semop(trans, SHM_SEM, 1);
 			libercat_semop(trans, SEND_SEM, 1);
 			if (ctx->callback)
@@ -223,8 +223,8 @@ static void *libercat_recv_thread(void *arg) {
 		if (sem->ctx_head) {
 			ctx = sem->ctx_head->ctx;
 			libercat_semop(trans, SHM_SEM, -1);
-			ctx->data->size = shm->shm->size;
-			memcpy(ctx->data->data, &shm->shm->data, ctx->data->size);
+			ctx->pdata->size = shm->shm->size;
+			memcpy(ctx->pdata->data, &shm->shm->data, ctx->pdata->size);
 			libercat_semop(trans, SHM_SEM, 1);
 			if (ctx->callback)
 				ctx->callback(trans, ctx->callback_arg);
@@ -470,6 +470,17 @@ int libercat_bind_server(libercat_trans_t *trans) {
 }
 
 
+/**
+ * libercat_start_cm_thread: dummy function
+ *
+ * @param trans [IN]
+ *
+ * @return same as pthread_create (0 on success)
+ */
+int libercat_start_cm_thread(libercat_trans_t *trans) {
+	return 0;
+}
+
 
 /**
  * libercat_accept: does the real connection acceptance
@@ -593,7 +604,7 @@ int libercat_connect(libercat_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 //FIXME num_sge
 	libercat_ctx_t *rctx;
 	libercat_sem_t *sem;
@@ -619,7 +630,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
 
 
 	rctx->used = 1;
-	rctx->data = *pdata;
+	rctx->pdata = pdata;
 	rctx->callback = callback;
 	rctx->callback_arg = callback_arg;
 
@@ -651,8 +662,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
-	libercat_data_t *data = *pdata;
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	libercat_ctx_t *wctx;
 	libercat_sem_t *sem;
 	libercat_list_t *elem;
@@ -677,7 +687,7 @@ int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num
 
 
 	wctx->used = 1;
-	wctx->data = data;
+	wctx->pdata = pdata;
 	wctx->callback = callback;
 	wctx->callback_arg = callback_arg;
 
@@ -719,7 +729,7 @@ static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -743,7 +753,7 @@ int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr) {
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 

@@ -150,12 +150,12 @@ struct libercat_rloc {
 };
 
 
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
+int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
+int libercat_post_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
 
 
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr);
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t **pdata, int num_sge, struct ibv_mr *mr);
+int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr);
+int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr);
 
 // server side
 int libercat_post_read(libercat_trans_t *trans, libercat_data_t *data, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
