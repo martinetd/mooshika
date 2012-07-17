@@ -12,23 +12,23 @@
 #include "log.h"
 #include "trans_rdma.h"
 
-void callback_send(libercat_trans_t *trans, void *arg) {
-	libercat_data_t *pdata = arg;
+void callback_send(msk_trans_t *trans, void *arg) {
+	msk_data_t *pdata = arg;
 
         INFO_LOG("got data: %s", (char*)pdata->data);
 }
 
-void callback_recv(libercat_trans_t *trans, void *arg) {
-	libercat_data_t **pdata = arg;
+void callback_recv(msk_trans_t *trans, void *arg) {
+	msk_data_t **pdata = arg;
 
         INFO_LOG("got data: %s", (char*)(*pdata)->data);
 }
 
 int main(int argc, char **argv) {
 	struct sockaddr_in addr;
-	libercat_trans_t *trans;
+	msk_trans_t *trans;
         struct ibv_mr *mr;
-        libercat_data_t *rdata, *wdata;
+        msk_data_t *rdata, *wdata;
 	char *a;
 
 	if (argc < 2) {
@@ -37,8 +37,8 @@ int main(int argc, char **argv) {
 	}
 
         a = malloc(1000*sizeof(char));
-        rdata = malloc(sizeof(libercat_data_t));
-	wdata = malloc(sizeof(libercat_data_t));
+        rdata = malloc(sizeof(msk_data_t));
+	wdata = malloc(sizeof(msk_data_t));
 
 
 	addr.sin_family = AF_INET;
@@ -46,14 +46,14 @@ int main(int argc, char **argv) {
 	inet_pton(AF_INET, argv[1], &addr.sin_addr);
 
 
-	trans = libercat_connect((struct sockaddr_storage*) &addr);
+	trans = msk_connect((struct sockaddr_storage*) &addr);
 
-	mr = libercat_reg_mr(trans, a, 1000*sizeof(char), IBV_ACCESS_LOCAL_WRITE);
+	mr = msk_reg_mr(trans, a, 1000*sizeof(char), IBV_ACCESS_LOCAL_WRITE);
 
 
         rdata->data=mr->addr;
         rdata->size=100*sizeof(char);
-        libercat_recv(trans, &rdata, mr, callback_recv, &rdata);
+        msk_recv(trans, &rdata, mr, callback_recv, &rdata);
 
 	wdata->data = mr->addr+100*sizeof(char);
         wdata->size=100*sizeof(char);
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
 
 	sleep(1);
 
-	libercat_send(trans, wdata, mr, callback_send, wdata);
+	msk_send(trans, wdata, mr, callback_send, wdata);
 
 	sleep(3);
 

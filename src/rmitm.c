@@ -29,23 +29,23 @@
 
 struct privatedata {
 	FILE *logfd;
-	libercat_trans_t *o_trans;
+	msk_trans_t *o_trans;
 	struct ibv_mr *mr;
-	libercat_data_t *first_rdata;
+	msk_data_t *first_rdata;
 	struct datalock *first_datalock;
 	pthread_mutex_t *lock;
 	pthread_mutex_t *o_lock;
 };
 
 struct datalock {
-	libercat_data_t *data;
+	msk_data_t *data;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
 
-void callback_recv(libercat_trans_t *, void*);
+void callback_recv(msk_trans_t *, void*);
 
-void callback_send(libercat_trans_t *trans, void *arg) {
+void callback_send(msk_trans_t *trans, void *arg) {
 	struct datalock *datalock = arg;
 	struct privatedata *priv = trans->private_data;
 	if (!datalock || !priv) {
@@ -53,10 +53,10 @@ void callback_send(libercat_trans_t *trans, void *arg) {
 		return;
 	}
 
-	libercat_post_recv(priv->o_trans, datalock->data, NUM_SGE, priv->mr, callback_recv, datalock);
+	msk_post_recv(priv->o_trans, datalock->data, NUM_SGE, priv->mr, callback_recv, datalock);
 }
 
-void callback_disconnect(libercat_trans_t *trans) {
+void callback_disconnect(msk_trans_t *trans) {
 	if (!trans->private_data)
 		return;
 
@@ -66,7 +66,7 @@ void callback_disconnect(libercat_trans_t *trans) {
 	pthread_mutex_unlock(datalock->lock);
 }
 
-void callback_recv(libercat_trans_t *trans, void *arg) {
+void callback_recv(msk_trans_t *trans, void *arg) {
 	struct datalock *datalock = arg;
 	struct privatedata *priv = trans->private_data;
 	if (!datalock || !priv) {
@@ -74,7 +74,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 		return;
 	}
 
-	libercat_data_t *data = datalock->data;
+	msk_data_t *data = datalock->data;
 
 	fwrite(data->data, data->size, sizeof(char), priv->logfd);
 	fwrite("\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11", 0x10, sizeof(char), priv->logfd);
@@ -82,7 +82,7 @@ void callback_recv(libercat_trans_t *trans, void *arg) {
 
 	usleep(10000);
 
-	libercat_post_send(priv->o_trans, data, 1, priv->mr, callback_send, datalock);
+	msk_post_send(priv->o_trans, data, 1, priv->mr, callback_send, datalock);
 }
 
 void print_help(char **argv) {
@@ -90,9 +90,9 @@ void print_help(char **argv) {
 }
 
 void* handle_trans(void *arg) {
-	libercat_trans_t *trans = arg;
+	msk_trans_t *trans = arg;
 	struct privatedata *priv;
-	libercat_trans_t *o_trans;
+	msk_trans_t *o_trans;
 	struct ibv_mr *mr;
 	int i;
 
@@ -101,7 +101,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(libercat_post_recv(trans, &priv->first_rdata[NUM_SGE*i], NUM_SGE, mr, callback_recv, &(priv->first_datalock[i])));
+		TEST_Z(msk_post_recv(trans, &priv->first_rdata[NUM_SGE*i], NUM_SGE, mr, callback_recv, &(priv->first_datalock[i])));
 
 	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
@@ -109,9 +109,9 @@ void* handle_trans(void *arg) {
 		// (tell the other we're done and )wait for the other
 		pthread_mutex_unlock(priv->o_lock);
 		pthread_mutex_lock(priv->lock);
-		TEST_Z(libercat_finalize_accept(trans));
+		TEST_Z(msk_finalize_accept(trans));
 	} else {
-		TEST_Z(libercat_finalize_connect(trans));
+		TEST_Z(msk_finalize_connect(trans));
 		// tell the other we're done(and wait for the other)
 		pthread_mutex_unlock(priv->o_lock);
 		pthread_mutex_lock(priv->lock);
@@ -124,7 +124,7 @@ void* handle_trans(void *arg) {
 
 	char dumpstr[10];
 
-	while (trans->state == LIBERCAT_CONNECTED) {
+	while (trans->state == MSK_CONNECTED) {
 
 		i = poll(&pollfd_stdin, 1, 100);
 
@@ -138,7 +138,7 @@ void* handle_trans(void *arg) {
 	}	
 
 
-	libercat_destroy_trans(&trans);
+	msk_destroy_trans(&trans);
 
 	pthread_exit(NULL);
 }
@@ -146,15 +146,15 @@ void* handle_trans(void *arg) {
 int main(int argc, char **argv) {
 
 
-	libercat_trans_t *s_trans;
-	libercat_trans_t *child_trans;
-	libercat_trans_t *c_trans;
+	msk_trans_t *s_trans;
+	msk_trans_t *child_trans;
+	msk_trans_t *c_trans;
 
-	libercat_trans_attr_t s_attr;
-	libercat_trans_attr_t c_attr;
+	msk_trans_attr_t s_attr;
+	msk_trans_attr_t c_attr;
 
-	memset(&s_attr, 0, sizeof(libercat_trans_attr_t));
-	memset(&c_attr, 0, sizeof(libercat_trans_attr_t));
+	memset(&s_attr, 0, sizeof(msk_trans_attr_t));
+	memset(&c_attr, 0, sizeof(msk_trans_attr_t));
 
 	s_attr.server = -1; // put an incorrect value to check if we're either client or server
 	c_attr.server = -1;
@@ -236,26 +236,26 @@ int main(int argc, char **argv) {
 
 
 	// server init
-	TEST_Z(libercat_init(&s_trans, &s_attr));
+	TEST_Z(msk_init(&s_trans, &s_attr));
 
 	if (!s_trans)
 		exit(-1);
 
-	TEST_Z(libercat_bind_server(s_trans));
-	child_trans = libercat_accept_one(s_trans);
+	TEST_Z(msk_bind_server(s_trans));
+	child_trans = msk_accept_one(s_trans);
 	
-	TEST_Z(libercat_start_cm_thread(s_trans));
+	TEST_Z(msk_start_cm_thread(s_trans));
 	
 	// got a client, start our own client before we finalize the server's connection
 
 	c_attr.pd = child_trans->pd;
 
-	TEST_Z(libercat_init(&c_trans, &c_attr));
+	TEST_Z(msk_init(&c_trans, &c_attr));
 
 	if (!c_trans)
 		exit(-1);
 
-	TEST_Z(libercat_connect(c_trans));
+	TEST_Z(msk_connect(c_trans));
 
 
 	// set up data_t elements and mr (needs to be common for both as well)
@@ -268,14 +268,14 @@ int main(int argc, char **argv) {
 	TEST_NZ(rdmabuf = malloc(mr_size));
 	memset(rdmabuf, 0, mr_size);
 	//FIXME that's not possible, can only reg it once -- need to use the same pd for both trans
-	TEST_NZ(mr = libercat_reg_mr(c_trans, rdmabuf, mr_size, IBV_ACCESS_LOCAL_WRITE));
+	TEST_NZ(mr = msk_reg_mr(c_trans, rdmabuf, mr_size, IBV_ACCESS_LOCAL_WRITE));
 
 
-	libercat_data_t *rdata;
+	msk_data_t *rdata;
 	struct datalock *datalock;
 	int i, j;
 
-	TEST_NZ(rdata = malloc(NUM_SGE*2*RECV_NUM*sizeof(libercat_data_t*)*sizeof(libercat_data_t)));
+	TEST_NZ(rdata = malloc(NUM_SGE*2*RECV_NUM*sizeof(msk_data_t*)*sizeof(msk_data_t)));
 	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
 
 	for (i=0; i < 2*RECV_NUM; i++) {
@@ -337,7 +337,7 @@ int main(int argc, char **argv) {
 	free(datalock);
 	free(rdmabuf);
 
-	libercat_destroy_trans(&s_trans);
+	msk_destroy_trans(&s_trans);
 
 	return 0;
 }

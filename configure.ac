@@ -1,4 +1,4 @@
-AC_INIT([libercat], [0.1], [dominique.martinet.ocre@cea.fr])
+AC_INIT([libmsk], [0.1], [dominique.martinet.ocre@cea.fr])
 AM_INIT_AUTOMAKE([-Wall -Werror])
 
 AC_CONFIG_MACRO_DIR([m4])
@@ -15,7 +15,7 @@ AC_SEARCH_LIBS([rdma_create_id], [rdmacm], [], [
 	AC_MSG_ERROR([unable to find librdmacm])
 ])
 
-AC_DEFINE( [VERSION_COMMENT], ["libercat and rcat example"], [No Comment])
+AC_DEFINE( [VERSION_COMMENT], ["libmsk and examples"], [No Comment])
 
 # Git latest commit
 AC_MSG_CHECKING( [Git HEAD] )
@@ -44,5 +44,5 @@ AM_CONDITIONAL(USE_SHM, test "x$enable_shm" = "xyes")
 AC_SUBST(ac_configure_args)
 
 AC_CONFIG_HEADERS([config.h])
-AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libercat.pc libercat.spec])
+AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libmsk.pc libmsk.spec])
 AC_OUTPUT

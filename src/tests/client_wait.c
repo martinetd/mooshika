@@ -14,9 +14,9 @@
 
 int main(int argc, char **argv) {
 	struct sockaddr_in addr;
-	libercat_trans_t *trans;
+	msk_trans_t *trans;
         struct ibv_mr *mr;
-        libercat_data_t *rdata, *wdata;
+        msk_data_t *rdata, *wdata;
 	char *a;
 
 	if (argc < 2) {
@@ -25,8 +25,8 @@ int main(int argc, char **argv) {
 	}
 
         a = malloc(1000*sizeof(char));
-        rdata = malloc(sizeof(libercat_data_t));
-	wdata = malloc(sizeof(libercat_data_t));
+        rdata = malloc(sizeof(msk_data_t));
+	wdata = malloc(sizeof(msk_data_t));
 
 
 	addr.sin_family = AF_INET;
@@ -34,14 +34,14 @@ int main(int argc, char **argv) {
 	inet_pton(AF_INET, argv[1], &addr.sin_addr);
 
 
-	trans = libercat_connect((struct sockaddr_storage*) &addr);
+	trans = msk_connect((struct sockaddr_storage*) &addr);
 
-	mr = libercat_reg_mr(trans, a, 1000*sizeof(char), IBV_ACCESS_LOCAL_WRITE);
+	mr = msk_reg_mr(trans, a, 1000*sizeof(char), IBV_ACCESS_LOCAL_WRITE);
 
 
         rdata->data=mr->addr;
         rdata->size=100*sizeof(char);
-        libercat_recv_wait(trans, &rdata, mr);
+        msk_recv_wait(trans, &rdata, mr);
 	INFO_LOG("recv'd data: %s", rdata->data);
 
 
@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
         wdata->size=100*sizeof(char);
 	strcpy((char*)wdata->data, "Message from client side (wait)");
 	sleep(1);
-	libercat_send_wait(trans, wdata, mr);
+	msk_send_wait(trans, wdata, mr);
 	INFO_LOG("sent data: %s", wdata->data);
 
 	return 0;
