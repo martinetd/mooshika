@@ -3,10 +3,10 @@ SUBDIRS = src \
 
 include_HEADERS = include/trans_rdma.h
 
-rpm: dist libercat.spec
+rpm: dist libmsk.spec
 	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -tb $(distdir).tar.gz
 
-srpm: dist libercat.spec
+srpm: dist libmsk.spec
 	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -ts $(distdir).tar.gz
 
 rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS:
@@ -21,5 +21,5 @@ doc:
 	doxygen ./doxygen.conf
 	cd doxygen/latex; make pdf
 
-EXTRA_DIST=libercat.spec \
+EXTRA_DIST=libmsk.spec \
            src/log.h

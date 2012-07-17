@@ -51,14 +51,14 @@
 
 
 /**
- * \struct libercat_ctx
+ * \struct msk_ctx
  * Context data we can use during recv/send callbacks
  */
-struct libercat_ctx {
+struct msk_ctx {
 	int used;			/**< 0 if we can use it for a new recv/send */
 	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
 	struct rdmactx *next;		/**< next context */
-	libercat_data_t *pdata;
+	msk_data_t *pdata;
 	ctx_callback_t callback;
 	union {
 		struct ibv_recv_wr rwr;
@@ -71,7 +71,7 @@ struct libercat_ctx {
 /* UTILITY FUNCTIONS */
 
 /**
- * libercat_reg_mr: registers memory for rdma use (almost the same as ibv_reg_mr)
+ * msk_reg_mr: registers memory for rdma use (almost the same as ibv_reg_mr)
  *
  * @param trans   [IN]
  * @param memaddr [IN] the address to register
@@ -81,23 +81,23 @@ struct libercat_ctx {
  * @return a pointer to the mr if registered correctly or NULL on failure
  */
 
-struct ibv_mr *libercat_reg_mr(libercat_trans_t *trans, void *memaddr, size_t size, int access) {
+struct ibv_mr *msk_reg_mr(msk_trans_t *trans, void *memaddr, size_t size, int access) {
 	return ibv_reg_mr(trans->pd, memaddr, size, access);
 }
 
 /**
- * libercat_reg_mr: deregisters memory for rdma use (exactly ibv_dereg_mr)
+ * msk_reg_mr: deregisters memory for rdma use (exactly ibv_dereg_mr)
  *
  * @param mr [INOUT] the mr to deregister
  *
  * @return 0 on success, errno value on failure
  */
-int libercat_dereg_mr(struct ibv_mr *mr) {
+int msk_dereg_mr(struct ibv_mr *mr) {
 	return ibv_dereg_mr(mr);
 }
 
 /**
- * libercat_make_rloc: makes a rkey to send it for remote host use
+ * msk_make_rloc: makes a rkey to send it for remote host use
  * 
  * @param mr   [IN] the mr in which the addr belongs
  * @param addr [IN] the addr to give
@@ -105,9 +105,9 @@ int libercat_dereg_mr(struct ibv_mr *mr) {
  *
  * @return a pointer to the rkey on success, NULL on failure.
  */
-libercat_rloc_t *libercat_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
-	libercat_rloc_t *rloc;
-	rloc = malloc(sizeof(libercat_rloc_t));
+msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
+	msk_rloc_t *rloc;
+	rloc = malloc(sizeof(msk_rloc_t));
 	if (!rloc) {
 		ERROR_LOG("Out of memory!");
 		return NULL;
@@ -120,7 +120,7 @@ libercat_rloc_t *libercat_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t s
 	return rloc;
 }
 
-void libercat_print_devinfo(libercat_trans_t *trans) {
+void msk_print_devinfo(msk_trans_t *trans) {
 	struct ibv_device_attr device_attr;
 	ibv_query_device(trans->cm_id->verbs, &device_attr);
 	uint64_t node_guid = ntohll(device_attr.node_guid);
@@ -134,12 +134,12 @@ void libercat_print_devinfo(libercat_trans_t *trans) {
 /* INIT/SHUTDOWN FUNCTIONS */
 
 /**
- * libercat_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone)
+ * msk_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone)
  *
  */
-static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
+static int msk_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
 	int ret = 0;
-	libercat_trans_t *trans = cma_id->context;
+	msk_trans_t *trans = cma_id->context;
 
 	INFO_LOG("cma_event type %s", rdma_event_str(event->event));
 
@@ -154,10 +154,10 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 	case RDMA_CM_EVENT_ADDR_RESOLVED:
 		INFO_LOG("ADDR_RESOLVED");
 		pthread_mutex_lock(&trans->lock);
-		trans->state = LIBERCAT_ADDR_RESOLVED;
+		trans->state = MSK_ADDR_RESOLVED;
 		ret = rdma_resolve_route(cma_id, trans->timeout);
 		if (ret) {
-			trans->state = LIBERCAT_ERROR;
+			trans->state = MSK_ERROR;
 			ERROR_LOG("rdma_resolve_route failed");
 			pthread_cond_signal(&trans->cond);
 		}
@@ -167,7 +167,7 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
 		INFO_LOG("ROUTE_RESOLVED");
 		pthread_mutex_lock(&trans->lock);
-		trans->state = LIBERCAT_ROUTE_RESOLVED;
+		trans->state = MSK_ROUTE_RESOLVED;
 		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
 		break;
@@ -175,7 +175,7 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 	case RDMA_CM_EVENT_ESTABLISHED:
 		INFO_LOG("ESTABLISHED");
 		pthread_mutex_lock(&trans->lock);
-		trans->state = LIBERCAT_CONNECTED;
+		trans->state = MSK_CONNECTED;
 		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
 		break;
@@ -198,7 +198,7 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 
 		ret = -1;
 
-		trans->state = LIBERCAT_CLOSED;
+		trans->state = MSK_CLOSED;
 		if (trans->disconnect_callback)
 			trans->disconnect_callback(trans);
 		pthread_mutex_lock(&trans->lock);
@@ -221,11 +221,11 @@ static int libercat_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_
 }
 
 /**
- * libercat_cm_thread: thread function which waits for new connection events and gives them to handler (then ack the event)
+ * msk_cm_thread: thread function which waits for new connection events and gives them to handler (then ack the event)
  *
  */
-static void *libercat_cm_thread(void *arg) {
-	libercat_trans_t *trans = arg;
+static void *msk_cm_thread(void *arg) {
+	msk_trans_t *trans = arg;
 	struct rdma_cm_event *event;
 	int ret;
 
@@ -236,10 +236,10 @@ static void *libercat_cm_thread(void *arg) {
 			ERROR_LOG("rdma_get_cm_event failed: %d. Stopping event watcher thread", ret);
 			break;
 		}
-		ret = libercat_cma_event_handler(event->id, event);
+		ret = msk_cma_event_handler(event->id, event);
 		rdma_ack_cm_event(event);
 		if (ret) {
-			if (trans->state != LIBERCAT_CLOSED)
+			if (trans->state != MSK_CLOSED)
 				ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
 			break;
 		}
@@ -249,14 +249,14 @@ static void *libercat_cm_thread(void *arg) {
 }
 
 /**
- * libercat_cq_event_handler: completion queue event handler.
+ * msk_cq_event_handler: completion queue event handler.
  * marks contexts back out of use and calls the appropriate callbacks for each kind of event
  *
  * @return 0 on success, work completion status if not 0
  */
-static int libercat_cq_event_handler(libercat_trans_t *trans) {
+static int msk_cq_event_handler(msk_trans_t *trans) {
 	struct ibv_wc wc;
-	libercat_ctx_t* ctx;
+	msk_ctx_t* ctx;
 	int ret;
 
 	while ((ret = ibv_poll_cq(trans->cq, 1, &wc)) == 1) {
@@ -269,7 +269,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 			ERROR_LOG("Something was bad on that send");
 		}
 		if (wc.status) {
-			if (trans->state != LIBERCAT_CLOSED)
+			if (trans->state != MSK_CLOSED)
 				ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
 			return wc.status;
 		}
@@ -280,7 +280,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 		case IBV_WC_RDMA_READ:
 			INFO_LOG("WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc.opcode);
 
-			ctx = (libercat_ctx_t *)wc.wr_id;
+			ctx = (msk_ctx_t *)wc.wr_id;
 			if (ctx->callback)
 				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
@@ -298,7 +298,7 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 				ERROR_LOG("imm_data: %d", ntohl(wc.imm_data));
 			}
 
-			ctx = (libercat_ctx_t *)wc.wr_id;
+			ctx = (msk_ctx_t *)wc.wr_id;
 			(ctx->pdata[0]).size = wc.byte_len; //FIXME num_sge
 			if (ctx->callback)
 				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
@@ -319,11 +319,11 @@ static int libercat_cq_event_handler(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_cq_thread: thread function which waits for new completion events and gives them to handler (then ack the event)
+ * msk_cq_thread: thread function which waits for new completion events and gives them to handler (then ack the event)
  *
  */
-static void *libercat_cq_thread(void *arg) {
-	libercat_trans_t *trans = arg;
+static void *msk_cq_thread(void *arg) {
+	msk_trans_t *trans = arg;
 	struct ibv_cq *ev_cq;
 	void *ev_ctx;
 	int ret;
@@ -342,7 +342,7 @@ static void *libercat_cq_thread(void *arg) {
 	comp_pollfd.events = POLLIN;
 	comp_pollfd.revents = 0;
 
-	while (trans->state != LIBERCAT_CLOSED) {
+	while (trans->state != MSK_CLOSED) {
 		ret = poll(&comp_pollfd, 1, 100);
 
 		if (ret == 0)
@@ -369,10 +369,10 @@ static void *libercat_cq_thread(void *arg) {
 			break;
 		}
 
-		ret = libercat_cq_event_handler(trans);
+		ret = msk_cq_event_handler(trans);
 		ibv_ack_cq_events(trans->cq, 1);
 		if (ret) {
-			if (trans->state != LIBERCAT_CLOSED)
+			if (trans->state != MSK_CLOSED)
 				ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
 			break;
 		}
@@ -383,13 +383,13 @@ static void *libercat_cq_thread(void *arg) {
 
 
 /**
- * libercat_destroy_buffer
+ * msk_destroy_buffer
  *
  * @param trans [INOUT]
  *
  * @return void even if some stuff here can fail //FIXME?
  */
-static void libercat_destroy_buffer(libercat_trans_t *trans) {
+static void msk_destroy_buffer(msk_trans_t *trans) {
 	if (trans->send_buf) {
 		free(trans->send_buf);
 		trans->send_buf = NULL;
@@ -401,13 +401,13 @@ static void libercat_destroy_buffer(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_destroy_qp: destroys all qp-related stuff for us
+ * msk_destroy_qp: destroys all qp-related stuff for us
  *
  * @param trans [INOUT]
  *
  * @return void, even if the functions _can_ fail we choose to ignore it. //FIXME?
  */
-static void libercat_destroy_qp(libercat_trans_t *trans) {
+static void msk_destroy_qp(msk_trans_t *trans) {
 	if (trans->qp) {
 		ibv_destroy_qp(trans->qp);
 		trans->qp = NULL;
@@ -428,20 +428,20 @@ static void libercat_destroy_qp(libercat_trans_t *trans) {
 
 
 /**
- * libercat_destroy_trans: disconnects and free trans data
+ * msk_destroy_trans: disconnects and free trans data
  *
  * @param ptrans [INOUT] pointer to the trans to destroy
  */
-void libercat_destroy_trans(libercat_trans_t **ptrans) {
+void msk_destroy_trans(msk_trans_t **ptrans) {
 
-	libercat_trans_t *trans = *ptrans;
+	msk_trans_t *trans = *ptrans;
 
 	if (trans) {
 		pthread_mutex_lock(&trans->lock);
 		if (trans->cm_id)
 			rdma_disconnect(trans->cm_id);
 
-		while (trans->state != LIBERCAT_CLOSED) {
+		while (trans->state != MSK_CLOSED) {
 			ERROR_LOG("we're not closed yet, waiting for disconnect_event");
 			pthread_cond_wait(&trans->cond, &trans->lock);
 		}
@@ -450,18 +450,18 @@ void libercat_destroy_trans(libercat_trans_t **ptrans) {
 		if (trans->cm_thread)
 			pthread_join(trans->cm_thread, NULL);
 		if (trans->cq_thread)
-			pthread_join(trans->cq_thread, NULL); //FIXME: cf. libercat_cq_thread's fixme, it's possible this never ends
+			pthread_join(trans->cq_thread, NULL); //FIXME: cf. msk_cq_thread's fixme, it's possible this never ends
 
 		// these two functions do the proper if checks
-		libercat_destroy_buffer(trans);
-		libercat_destroy_qp(trans);
+		msk_destroy_buffer(trans);
+		msk_destroy_qp(trans);
 
 		if (trans->cm_id) {
 			rdma_destroy_id(trans->cm_id);
 			trans->cm_id = NULL;
 		}
 		// event channel is shared between all children, so don't close it unless it's its own.
-		if (((!trans->server) || (trans->state == LIBERCAT_LISTENING)) && trans->event_channel) {
+		if (((!trans->server) || (trans->state == MSK_LISTENING)) && trans->event_channel) {
 			rdma_destroy_event_channel(trans->event_channel);
 			trans->event_channel = NULL;
 		}
@@ -477,19 +477,19 @@ void libercat_destroy_trans(libercat_trans_t **ptrans) {
 }
 
 /**
- * libercat_init: part of the init that's the same for client and server
+ * msk_init: part of the init that's the same for client and server
  *
  * @param ptrans [INOUT]
  * @param attr   [IN]    attributes to set parameters in ptrans. attr->addr must be set, others can be either 0 or sane values.
  *
  * @return 0 on success, errno value on failure
  */
-int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
+int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 	int ret;
 
-	libercat_trans_t *trans;
+	msk_trans_t *trans;
 
-	*ptrans = malloc(sizeof(libercat_trans_t));
+	*ptrans = malloc(sizeof(msk_trans_t));
 	if (!*ptrans) {
 		ERROR_LOG("Out of memory");
 		return ENOMEM;
@@ -497,13 +497,13 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 
 	trans=*ptrans;
 
-	memset(trans, 0, sizeof(libercat_trans_t));
+	memset(trans, 0, sizeof(msk_trans_t));
 
 	trans->event_channel = rdma_create_event_channel();
 	if (!trans->event_channel) {
 		ret = errno;
 		ERROR_LOG("create_event_channel failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 		return ret;
 	}
 
@@ -511,11 +511,11 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	if (ret) {
 		ret = errno;
 		ERROR_LOG("create_id failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 		return ret;
 	}
 
-	trans->state = LIBERCAT_INIT;
+	trans->state = MSK_INIT;
 
 	if (!attr->addr.sa_stor.ss_family) { //FIXME: do a proper check?
 		ERROR_LOG("address has to be defined");
@@ -537,13 +537,13 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 		return ret;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 		return ret;
 	}
 
@@ -551,14 +551,14 @@ int libercat_init(libercat_trans_t **ptrans, libercat_trans_attr_t *attr) {
 }
 
 /**
- * libercat_create_qp: create a qp associated with a trans
+ * msk_create_qp: create a qp associated with a trans
  *
  * @param trans [INOUT]
  * @param cm_id [IN]
  *
  * @ret 0 on success, errno value on error
  */
-static int libercat_create_qp(libercat_trans_t *trans, struct rdma_cm_id *cm_id) {
+static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
 	struct ibv_qp_init_attr init_attr;
 	int ret;
 
@@ -584,13 +584,13 @@ static int libercat_create_qp(libercat_trans_t *trans, struct rdma_cm_id *cm_id)
 }
 
 /**
- * libercat_setup_qp: setups pd, qp an' stuff
+ * msk_setup_qp: setups pd, qp an' stuff
  *
  * @param trans [INOUT]
  *
  * @return 0 on success, errno value on failure
  */
-static int libercat_setup_qp(libercat_trans_t *trans) {
+static int msk_setup_qp(msk_trans_t *trans) {
 	int ret;
 
 	INFO_LOG("trans: %p", trans);
@@ -607,7 +607,7 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
 	if (!trans->comp_channel) {
 		ret = errno;
 		ERROR_LOG("ibv_create_comp_channel failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_qp(trans);
+		msk_destroy_qp(trans);
 		return ret;
 	}
 
@@ -616,21 +616,21 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
 	if (!trans->cq) {
 		ret = errno;
 		ERROR_LOG("ibv_create_cq failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_qp(trans);
+		msk_destroy_qp(trans);
 		return ret;
 	}
 
 	ret = ibv_req_notify_cq(trans->cq, 0);
 	if (ret) {
 		ERROR_LOG("ibv_req_notify_cq failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_qp(trans);
+		msk_destroy_qp(trans);
 		return ret;
 	}
 
-	ret = libercat_create_qp(trans, trans->cm_id);
+	ret = msk_create_qp(trans, trans->cm_id);
 	if (ret) {
 		ERROR_LOG("our own create_qp failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_qp(trans);
+		msk_destroy_qp(trans);
 		return ret;
 	}
 
@@ -640,34 +640,34 @@ static int libercat_setup_qp(libercat_trans_t *trans) {
 
 
 /**
- * libercat_setup_buffer
+ * msk_setup_buffer
  */
-static int libercat_setup_buffer(libercat_trans_t *trans) {
-	trans->recv_buf = malloc(trans->rq_depth * sizeof(libercat_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
+static int msk_setup_buffer(msk_trans_t *trans) {
+	trans->recv_buf = malloc(trans->rq_depth * sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
 	if (!trans->recv_buf) {
 		ERROR_LOG("couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
-	memset(trans->recv_buf, 0, trans->rq_depth * sizeof(libercat_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
+	memset(trans->recv_buf, 0, trans->rq_depth * sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
 
-	trans->send_buf = malloc(trans->sq_depth * sizeof(libercat_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
+	trans->send_buf = malloc(trans->sq_depth * sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
 	if (!trans->send_buf) {
 		ERROR_LOG("couldn't malloc trans->send_buf");
 		return ENOMEM;
 	}
-	memset(trans->send_buf, 0, trans->sq_depth * sizeof(libercat_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
+	memset(trans->send_buf, 0, trans->sq_depth * sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
 
 	return 0;
 }
 
 /**
- * libercat_bind_server
+ * msk_bind_server
  *
  * @param trans [INOUT]
  *
  * @return 0 on success, errno value on failure
  */
-int libercat_bind_server(libercat_trans_t *trans) {
+int msk_bind_server(msk_trans_t *trans) {
 	int ret;
 
 
@@ -701,14 +701,14 @@ int libercat_bind_server(libercat_trans_t *trans) {
 		return ret;
 	}
 
-	trans->state = LIBERCAT_LISTENING;
+	trans->state = MSK_LISTENING;
 
 	return 0;
 }
 
 
-static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct rdma_cm_id *cm_id) {
-	libercat_trans_t *trans = malloc(sizeof(libercat_trans_t));
+static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id *cm_id) {
+	msk_trans_t *trans = malloc(sizeof(msk_trans_t));
 	int ret;
 
 	if (!trans) {
@@ -716,7 +716,7 @@ static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct r
 		return NULL;
 	}
 
-	memcpy(trans, listening_trans, sizeof(libercat_trans_t));
+	memcpy(trans, listening_trans, sizeof(msk_trans_t));
 
 	trans->cm_id = cm_id;
 	trans->cm_id->context = trans;
@@ -727,13 +727,13 @@ static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct r
 	ret = pthread_mutex_init(&trans->lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 		return NULL;
 	}
 	ret = pthread_cond_init(&trans->cond, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 		return NULL;
 	}
 
@@ -741,13 +741,13 @@ static libercat_trans_t *clone_trans(libercat_trans_t *listening_trans, struct r
 }
 
 /**
- * libercat_accept: does the real connection acceptance //FIXME it's still called by accept_one, either make it static again or don't call it in accept_one...
+ * msk_accept: does the real connection acceptance //FIXME it's still called by accept_one, either make it static again or don't call it in accept_one...
  *
  * @param trans [IN]
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_finalize_accept(libercat_trans_t *trans) {
+int msk_finalize_accept(msk_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
@@ -767,7 +767,7 @@ int libercat_finalize_accept(libercat_trans_t *trans) {
 	}
 
 
-	while (trans->state != LIBERCAT_CONNECTED) {
+	while (trans->state != MSK_CONNECTED) {
 		pthread_cond_wait(&trans->cond, &trans->lock);
 	}
 
@@ -777,13 +777,13 @@ int libercat_finalize_accept(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_start_cm_thread: starts cm event thread for server side in case there's no accept_one idling
+ * msk_start_cm_thread: starts cm event thread for server side in case there's no accept_one idling
  *
  * @param trans [IN]
  *
  * @return same as pthread_create (0 on success)
  */
-int libercat_start_cm_thread(libercat_trans_t *trans) {
+int msk_start_cm_thread(msk_trans_t *trans) {
 	pthread_attr_t attr_thr;
 
 	/* Init for thread parameter (mostly for scheduling) */
@@ -796,23 +796,23 @@ int libercat_start_cm_thread(libercat_trans_t *trans) {
 	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 		ERROR_LOG("can't set pthread's join state");
 
-	return pthread_create(&trans->cm_thread, &attr_thr, libercat_cm_thread, trans);
+	return pthread_create(&trans->cm_thread, &attr_thr, msk_cm_thread, trans);
 }
 
 /**
- * libercat_accept_one: given a listening trans, waits till one connection is requested and accepts it
+ * msk_accept_one: given a listening trans, waits till one connection is requested and accepts it
  *
  * @param rdma_connection [IN] the mother trans
  *
  * @return a new trans for the child on success, NULL on failure
  */
-libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
+msk_trans_t *msk_accept_one(msk_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
 
 	//TODO: timeout?
 
 	struct rdma_cm_event *event;
 	struct rdma_cm_id *cm_id;
-	libercat_trans_t *trans = NULL;
+	msk_trans_t *trans = NULL;
 	int ret;
 
 	while (!trans) {
@@ -835,7 +835,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 			INFO_LOG("ESTABLISHED");
 			trans = cm_id->context;
 			pthread_mutex_lock(&trans->lock);
-			trans->state = LIBERCAT_CONNECTED;
+			trans->state = MSK_CONNECTED;
 			pthread_cond_broadcast(&trans->cond);
 			pthread_mutex_unlock(&trans->lock);
 			trans = NULL;
@@ -845,7 +845,7 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 			INFO_LOG("DISCONNECTED");
 			trans = cm_id->context;
 			pthread_mutex_lock(&trans->lock);
-			trans->state = LIBERCAT_CLOSED;
+			trans->state = MSK_CLOSED;
 			if (trans->disconnect_callback)
 				trans->disconnect_callback(trans);
 			pthread_cond_broadcast(&trans->cond);
@@ -859,8 +859,8 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 		rdma_ack_cm_event(event);
 	}
 	if (trans) {
-		libercat_setup_qp(trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
-		libercat_setup_buffer(trans);
+		msk_setup_qp(trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
+		msk_setup_buffer(trans);
 		pthread_attr_t attr_thr;
 
 		/* Init for thread parameter (mostly for scheduling) */
@@ -873,17 +873,17 @@ libercat_trans_t *libercat_accept_one(libercat_trans_t *rdma_connection) { //TOD
 		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 			ERROR_LOG("can't set pthread's join state");
 
-		pthread_create(&trans->cq_thread, &attr_thr, libercat_cq_thread, trans);
+		pthread_create(&trans->cq_thread, &attr_thr, msk_cq_thread, trans);
 	}
 	return trans;
 }
 
 /**
- * libercat_bind_client: resolve addr and route for the client and waits till it's done
+ * msk_bind_client: resolve addr and route for the client and waits till it's done
  * (the route and pthread_cond_signal is done in the cm thread)
  *
  */
-static int libercat_bind_client(libercat_trans_t *trans) {
+static int msk_bind_client(msk_trans_t *trans) {
 	int ret;
 
 	pthread_mutex_lock(&trans->lock);
@@ -902,10 +902,10 @@ static int libercat_bind_client(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_connect_client: does the actual connection to the server //FIXME: do we want to remove the static to allow for post_recv before connecting?
+ * msk_connect_client: does the actual connection to the server //FIXME: do we want to remove the static to allow for post_recv before connecting?
  *
  */
-int libercat_finalize_connect(libercat_trans_t *trans) {
+int msk_finalize_connect(msk_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
@@ -927,7 +927,7 @@ int libercat_finalize_connect(libercat_trans_t *trans) {
 	pthread_cond_wait(&trans->cond, &trans->lock);
 	pthread_mutex_unlock(&trans->lock);
 
-	if (trans->state != LIBERCAT_CONNECTED) {
+	if (trans->state != MSK_CONNECTED) {
 		ERROR_LOG("trans not in CONNECTED state as expected");
 		return ENOTCONN;
 	}
@@ -936,13 +936,13 @@ int libercat_finalize_connect(libercat_trans_t *trans) {
 }
 
 /**
- * libercat_connect: connects a client to a server
+ * msk_connect: connects a client to a server
  *
  * @param trans [INOUT] trans must be init first
  *
  * @return 0 on success, the value of errno on error 
  */
-int libercat_connect(libercat_trans_t *trans) {
+int msk_connect(msk_trans_t *trans) {
 
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
@@ -966,13 +966,13 @@ int libercat_connect(libercat_trans_t *trans) {
 	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 		ERROR_LOG("can't set pthread's join state");
 
-	pthread_create(&trans->cm_thread, &attr_thr, libercat_cm_thread, trans);
+	pthread_create(&trans->cm_thread, &attr_thr, msk_cm_thread, trans);
 
-	libercat_bind_client(trans);
-	libercat_setup_qp(trans);
-	libercat_setup_buffer(trans);
+	msk_bind_client(trans);
+	msk_setup_qp(trans);
+	msk_setup_buffer(trans);
 
-	pthread_create(&trans->cq_thread, &attr_thr, libercat_cq_thread, trans);
+	pthread_create(&trans->cq_thread, &attr_thr, msk_cq_thread, trans);
 
 	return 0;
 }
@@ -980,7 +980,7 @@ int libercat_connect(libercat_trans_t *trans) {
 
 
 /**
- * libercat_post_recv: Post a receive buffer.
+ * msk_post_recv: Post a receive buffer.
  *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans        [IN]
@@ -991,9 +991,9 @@ int libercat_connect(libercat_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting recv");
-	libercat_ctx_t *rctx;
+	msk_ctx_t *rctx;
 	int i, ret;
 
 	pthread_mutex_lock(&trans->lock);
@@ -1001,7 +1001,7 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_
 	do {
 		for (i = 0, rctx = trans->recv_buf;
 		     i < trans->rq_depth;
-		     i++, rctx = (libercat_ctx_t*)((uint8_t*)rctx + sizeof(libercat_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
+		     i++, rctx = (msk_ctx_t*)((uint8_t*)rctx + sizeof(msk_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
 			if (!rctx->used)
 				break;
 
@@ -1042,9 +1042,9 @@ int libercat_post_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_
 	return 0;
 }
 
-static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcode opcode, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting a send with op %d", opcode);
-	libercat_ctx_t *wctx;
+	msk_ctx_t *wctx;
 	int i, ret;
 
 	// opcode-specific checks:
@@ -1063,9 +1063,9 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
 	pthread_mutex_lock(&trans->lock);
 
 	do {
-		for (i = 0, wctx = (libercat_ctx_t *)trans->send_buf;
+		for (i = 0, wctx = (msk_ctx_t *)trans->send_buf;
 		     i < trans->sq_depth;
-		     i++, wctx = (libercat_ctx_t*)((uint8_t*)wctx + sizeof(libercat_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
+		     i++, wctx = (msk_ctx_t*)((uint8_t*)wctx + sizeof(msk_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
 			if (!wctx->used)
 				break;
 
@@ -1133,15 +1133,15 @@ static int libercat_post_send_generic(libercat_trans_t *trans, enum ibv_wr_opcod
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_post_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, callback_arg);
+int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, callback_arg);
 }
 
 /**
- * libercat_wait_callback: send/recv callback that just unlocks a mutex.
+ * msk_wait_callback: send/recv callback that just unlocks a mutex.
  *
  */
-static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
+static void msk_wait_callback(msk_trans_t *trans, void *arg) {
 	pthread_mutex_t *lock = arg;
 	pthread_mutex_unlock(lock);
 }
@@ -1156,12 +1156,12 @@ static void libercat_wait_callback(libercat_trans_t *trans, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr) {
+int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_recv(trans, pdata, num_sge, mr, libercat_wait_callback, &lock);
+	ret = msk_post_recv(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1180,12 +1180,12 @@ int libercat_wait_recv(libercat_trans_t *trans, libercat_data_t *pdata, int num_
  *
  * @return 0 on success, the value of errno on error
  */
-int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_sge, struct ibv_mr *mr) {
+int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_send(trans, pdata, num_sge, mr, libercat_wait_callback, &lock);
+	ret = msk_post_send(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1202,20 +1202,20 @@ int libercat_wait_send(libercat_trans_t *trans, libercat_data_t *pdata, int num_
 // server specific:
 
 
-int libercat_post_read(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, 1, mr, rloc, callback, callback_arg);
+int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, 1, mr, rloc, callback, callback_arg);
 }
 
-int libercat_post_write(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return libercat_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, 1, mr, rloc, callback, callback_arg);
+int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, 1, mr, rloc, callback, callback_arg);
 }
 
-int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_read(trans, pdata, mr, rloc, libercat_wait_callback, &lock);
+	ret = msk_post_read(trans, pdata, mr, rloc, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1227,12 +1227,12 @@ int libercat_wait_read(libercat_trans_t *trans, libercat_data_t *pdata, struct i
 }
 
 
-int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *pdata, struct ibv_mr *mr, libercat_rloc_t *rloc) {
+int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = libercat_post_write(trans, pdata, mr, rloc, libercat_wait_callback, &lock);
+	ret = msk_post_write(trans, pdata, mr, rloc, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1245,5 +1245,5 @@ int libercat_wait_write(libercat_trans_t *trans, libercat_data_t *pdata, struct 
 
 
 // client specific:
-int libercat_write_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_write server side ~= libercat_read
-int libercat_read_request(libercat_trans_t *trans, libercat_rloc_t *libercat_rloc, size_t size); // = ask for libercat_read server side ~= libercat_write
+int msk_write_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_write server side ~= msk_read
+int msk_read_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_read server side ~= msk_write

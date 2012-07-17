@@ -7,7 +7,7 @@ doxygen
 *~
 m4
 \#*\#
-libercat.spec
+libmsk.spec
 cscope*
 Makefile
 Makefile.in

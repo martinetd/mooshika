@@ -24,18 +24,18 @@
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
 struct datamr {
-	libercat_data_t *data;
+	msk_data_t *data;
 	struct ibv_mr *mr;
-	libercat_data_t *ackdata;
+	msk_data_t *ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
 
-void callback_send(libercat_trans_t *trans, void *arg) {
+void callback_send(msk_trans_t *trans, void *arg) {
 
 }
 
-void callback_disconnect(libercat_trans_t *trans) {
+void callback_disconnect(msk_trans_t *trans) {
 	if (!trans->private_data)
 		return;
 
@@ -45,23 +45,23 @@ void callback_disconnect(libercat_trans_t *trans) {
 	pthread_mutex_unlock(datamr->lock);
 }
 
-void callback_recv(libercat_trans_t *trans, void *arg) {
+void callback_recv(msk_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
 	if (!datamr) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
 
-	libercat_data_t *pdata = datamr->data;
+	msk_data_t *pdata = datamr->data;
 
 	if (pdata->size != 1 || pdata->data[0] != '\0') {
 		write(1, (char *)pdata->data, pdata->size);
 		fflush(stdout);
 
-		libercat_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
-		libercat_post_send(trans, datamr->ackdata, 1, datamr->mr, NULL, NULL);
+		msk_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
+		msk_post_send(trans, datamr->ackdata, 1, datamr->mr, NULL, NULL);
 	} else {
-		libercat_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
+		msk_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
 
 		pthread_mutex_lock(datamr->lock);
 		pthread_cond_signal(datamr->cond);
@@ -74,20 +74,20 @@ void print_help(char **argv) {
 }
 
 void* handle_trans(void *arg) {
-	libercat_trans_t *trans = arg;
+	msk_trans_t *trans = arg;
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
-	libercat_data_t *wdata;
+	msk_data_t *wdata;
 
 
 	TEST_NZ(rdmabuf = malloc((RECV_NUM+2)*CHUNK_SIZE*sizeof(char)));
 	memset(rdmabuf, 0, (RECV_NUM+2)*CHUNK_SIZE*sizeof(char));
-	TEST_NZ(mr = libercat_reg_mr(trans, rdmabuf, (RECV_NUM+2)*CHUNK_SIZE*sizeof(char), IBV_ACCESS_LOCAL_WRITE));
+	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, (RECV_NUM+2)*CHUNK_SIZE*sizeof(char), IBV_ACCESS_LOCAL_WRITE));
 
 
 
-	libercat_data_t *ackdata;
-	TEST_NZ(ackdata = malloc(sizeof(libercat_data_t)));
+	msk_data_t *ackdata;
+	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)));
 	ackdata->data = rdmabuf+(RECV_NUM+1)*CHUNK_SIZE*sizeof(char);
 	ackdata->max_size = CHUNK_SIZE*sizeof(char);
 	ackdata->size = 1;
@@ -99,15 +99,15 @@ void* handle_trans(void *arg) {
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
 
-	libercat_data_t **rdata;
+	msk_data_t **rdata;
 	struct datamr *datamr;
 	int i;
 
-	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(libercat_data_t*)));
+	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
 	TEST_NZ(datamr = malloc(RECV_NUM*sizeof(struct datamr)));
 
 	for (i=0; i < RECV_NUM; i++) {
-		TEST_NZ(rdata[i] = malloc(sizeof(libercat_data_t)));
+		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
 		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
 		datamr[i].data = rdata[i];
@@ -115,18 +115,18 @@ void* handle_trans(void *arg) {
 		datamr[i].ackdata = ackdata; 
 		datamr[i].lock = &lock;
 		datamr[i].cond = &cond;
-		TEST_Z(libercat_post_recv(trans, rdata[i], 1, mr, callback_recv, &(datamr[i])));
+		TEST_Z(msk_post_recv(trans, rdata[i], 1, mr, callback_recv, &(datamr[i])));
 	}
 
 	trans->private_data = datamr;
 
 	if (trans->server) {
-		TEST_Z(libercat_finalize_accept(trans));
+		TEST_Z(msk_finalize_accept(trans));
 	} else {
-		TEST_Z(libercat_finalize_connect(trans));
+		TEST_Z(msk_finalize_connect(trans));
 	}
 
-	TEST_NZ(wdata = malloc(sizeof(libercat_data_t)));
+	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
 	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE*sizeof(char);
 	wdata->max_size = CHUNK_SIZE*sizeof(char);
 
@@ -135,7 +135,7 @@ void* handle_trans(void *arg) {
 	pollfd_stdin.events = POLLIN | POLLPRI;
 	pollfd_stdin.revents = 0;
 
-	while (trans->state == LIBERCAT_CONNECTED) {
+	while (trans->state == MSK_CONNECTED) {
 
 		i = poll(&pollfd_stdin, 1, 100);
 
@@ -150,13 +150,13 @@ void* handle_trans(void *arg) {
 			break;
 
 		pthread_mutex_lock(&lock);
-		TEST_Z(libercat_post_send(trans, wdata, 1, mr, NULL, NULL));
+		TEST_Z(msk_post_send(trans, wdata, 1, mr, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	
 
 
-	libercat_destroy_trans(&trans);
+	msk_destroy_trans(&trans);
 
 	pthread_exit(NULL);
 }
@@ -164,14 +164,14 @@ void* handle_trans(void *arg) {
 int main(int argc, char **argv) {
 
 
-	libercat_trans_t *trans;
-	libercat_trans_t *child_trans;
+	msk_trans_t *trans;
+	msk_trans_t *child_trans;
 
-	libercat_trans_attr_t attr;
+	msk_trans_attr_t attr;
 
 	int mt_server = 0;
 
-	memset(&attr, 0, sizeof(libercat_trans_attr_t));
+	memset(&attr, 0, sizeof(msk_trans_attr_t));
 
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
@@ -238,14 +238,14 @@ int main(int argc, char **argv) {
 		exit(EINVAL);
 	}
 
-	TEST_Z(libercat_init(&trans, &attr));
+	TEST_Z(msk_init(&trans, &attr));
 
 	if (!trans)
 		exit(-1);
 
 
 	if (trans->server) {
-		TEST_Z(libercat_bind_server(trans));
+		TEST_Z(msk_bind_server(trans));
 		pthread_attr_t attr_thr;
 
 		/* Init for thread parameter (mostly for scheduling) */
@@ -262,7 +262,7 @@ int main(int argc, char **argv) {
 
 		if (mt_server) {
 			while (1) {
-				child_trans = libercat_accept_one(trans);
+				child_trans = msk_accept_one(trans);
 				if (!child_trans) {
 					ERROR_LOG("accept_one failed!");
 					break;
@@ -270,13 +270,13 @@ int main(int argc, char **argv) {
 				pthread_create(&id, &attr_thr, handle_trans, child_trans);
 			}
 		} else {
-			child_trans = libercat_accept_one(trans);
-			TEST_Z(libercat_start_cm_thread(trans));
+			child_trans = msk_accept_one(trans);
+			TEST_Z(msk_start_cm_thread(trans));
 			handle_trans(child_trans);
 		}
-		libercat_destroy_trans(&trans);
+		msk_destroy_trans(&trans);
 	} else { //client
-		TEST_Z(libercat_connect(trans));
+		TEST_Z(msk_connect(trans));
 		handle_trans(trans);
 	       
 	}

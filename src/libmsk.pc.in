@@ -3,9 +3,9 @@ exec_prefix=@exec_prefix@
 libdir=@libdir@
 includedir=@includedir@
 
-Name: libercat
-Description: rdma helper library
+Name: libmsk
+Description: libmooshika - rdma helper library
 Requires:
 Version: @VERSION@
-Libs: -L${libdir} -lercat -lpthread -ldl -lrdmacm -libverbs
+Libs: -L${libdir} -lmsk -lpthread -ldl -lrdmacm -libverbs
 Cflags: -I{includedir}

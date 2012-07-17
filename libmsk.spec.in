@@ -1,5 +1,5 @@
-Summary: The libercat library
-Name: libercat
+Summary: The mooshika library (libmsk)
+Name: libmsk
 Version: 0.1
 Release: 1
 Group: Application/Devel
@@ -13,15 +13,16 @@ BuildRequires: librdmacm-devel, libibverbs-devel, gcc, automake, libtool
 
 %package devel
 Group: Application/Devel
-Summary: Development files for libercat
+Summary: Development files for libmsk
 Requires: librdmacm-devel, libibverbs-devel
 
 %description devel
-Development files for libercat
+Development files for libmooshika
 
 
 %description
-This package contains the libercat library
+This package contains the libmooshika library
+It is an helper for rdma connection handling
 
 %prep
 %setup -q -n %{name}-%{version}
