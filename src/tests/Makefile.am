@@ -1,6 +1,6 @@
 AM_CFLAGS = -g -Wall -Werror -I$(srcdir)/../../include -I$(srcdir)/..
 
-bin_PROGRAMS = read_write bench_rdma nfsv4_client
+check_PROGRAMS = read_write bench_rdma nfsv4_client
 
 read_write_SOURCES = read_write.c
 read_write_LDADD = -lrdmacm -libverbs -lpthread
