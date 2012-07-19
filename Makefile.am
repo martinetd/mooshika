@@ -1,3 +1,5 @@
+ACLOCAL_AMFLAGS = -I m4
+
 SUBDIRS = src \
           rpm
 
@@ -8,6 +10,8 @@ rpm: dist libmsk.spec
 
 srpm: dist libmsk.spec
 	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -ts $(distdir).tar.gz
+
+rpms: rpm srpm
 
 rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS:
 	mkdir -p $@

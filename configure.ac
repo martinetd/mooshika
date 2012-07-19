@@ -7,13 +7,17 @@ AC_GNU_SOURCE
 AC_PROG_CC
 AC_PROG_LIBTOOL
 
+# Check for InfiniBand Libs and Headers
 AC_SEARCH_LIBS([ibv_create_qp], [ibverbs], [], [
 	AC_MSG_ERROR([unable to find libibverbs])
 ])
+AC_CHECK_HEADERS([infiniband/verbs.h],[], [AC_MSG_ERROR(missing infiniband headers)])
 
+# Check for RDAM_CM Libs and Headers
 AC_SEARCH_LIBS([rdma_create_id], [rdmacm], [], [
 	AC_MSG_ERROR([unable to find librdmacm])
 ])
+AC_CHECK_HEADERS([rdma/rdma_verbs.h],[], [AC_MSG_ERROR(missing rdma headers)])
 
 AC_DEFINE( [VERSION_COMMENT], ["libmsk and examples"], [No Comment])
 
