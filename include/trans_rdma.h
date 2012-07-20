@@ -29,55 +29,30 @@
  *
  */
 
+#ifndef _TRANS_RDMA_H
+#define _TRANS_RDMA_H
 
-/*========================================
-QUESTIONS:
- - log mecanism
-	-> nfs-ganesha/src/include/log.h, add a "RDMA" component n' LogInfo(component, etc), LogWarn, LogError...
-		log_level_t? easy to use out of nfs-ganesha? Might want just to ceate dummy macroes for now
- - callbacks
- - ok to use pthread, or does nfs-ganesha have any specific ones? (same with semaphores/lock, pthread_cond_*?) 
-	-> looks ok with pthread_cond or include/SemN.h
- - queue implem to use, make my own? easy way out = like diod = a fixed length array of bufers with a "used" flag
-==========================================
-not a question, but 9p only uses recv/send and never _ever_ does any read/write in its current implementation...
-========================================*/
-
-// public api;
-
-typedef struct msk_data msk_data_t;
 typedef struct msk_trans msk_trans_t;
 typedef struct msk_trans_attr msk_trans_attr_t;
+
 typedef struct msk_ctx msk_ctx_t;
-typedef struct msk_rloc msk_rloc_t;
-typedef enum msk_op msk_op_t;
-typedef union sockaddr_union sockaddr_union_t;
-
-enum msk_op {
-	MSK_DATA = 0,
-	MSK_ACK,
-	MSK_READ_REQ,
-	MSK_WRITE_REQ,
-	MSK_RLOC
-};
-
 
 /**
  * \struct msk_data
  * data size and content to send/just received
  */
-struct msk_data {
+typedef struct msk_data {
 	uint32_t max_size; /**< size of the data field */
 	uint32_t size; /**< size of the data to actually send/read */
 	uint8_t *data; /**< opaque data */
-};
+} msk_data_t;
 
-union sockaddr_union {
+typedef union sockaddr_union {
 	struct sockaddr sa;
 	struct sockaddr_in sa_in;
 	struct sockaddr_in6 sa_int6;
 	struct sockaddr_storage sa_stor;
-};
+} sockaddr_union_t;
 
 typedef void (*disconnect_callback_t) (msk_trans_t *trans);
 
@@ -115,8 +90,8 @@ struct msk_trans {
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	int server;			/**< 0 if client, number of connections to accept on server */
-	msk_ctx_t *send_buf;	/**< pointer to actual context data */
-	msk_ctx_t *recv_buf;	/**< pointer to actual context data */
+	msk_ctx_t *send_buf;		/**< pointer to actual context data */
+	msk_ctx_t *recv_buf;		/**< pointer to actual context data */
 	pthread_mutex_t lock;		/**< lock for events */
 	pthread_cond_t cond;		/**< cond for events */
 	struct ibv_recv_wr *bad_recv_wr;
@@ -143,11 +118,11 @@ typedef void (*ctx_callback_t)(msk_trans_t *trans, void *arg);
  * \struct msk_rloc
  * stores one remote address to write/read at
  */
-struct msk_rloc {
+typedef struct msk_rloc {
 	uint64_t raddr; /**< remote memory address */
 	uint32_t rkey; /**< remote key */
 	uint32_t size; /**< size of the region we can write/read */
-};
+} msk_rloc_t;
 
 
 int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
@@ -157,7 +132,6 @@ int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
 int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr);
 int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr);
 
-// server side
 int msk_post_read(msk_trans_t *trans, msk_data_t *data, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
 int msk_post_write(msk_trans_t *trans, msk_data_t *data, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
 int msk_wait_read(msk_trans_t *trans, msk_data_t *data, struct ibv_mr *mr, msk_rloc_t *rloc);
@@ -186,9 +160,8 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans);
 int msk_start_cm_thread(msk_trans_t *trans);
 int msk_finalize_accept(msk_trans_t *trans);
 void msk_destroy_trans(msk_trans_t **ptrans);
-// do we want create/destroy + listen/shutdown, or can both be done in a single call?
-// if second we could have create/destroy shared with client, but honestly there's not much to share...
-// client
+
 int msk_connect(msk_trans_t *trans);
 int msk_finalize_connect(msk_trans_t *trans);
 
+#endif /* _TRANS_RDMA_H */
