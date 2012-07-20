@@ -1,5 +1,5 @@
-Summary: The mooshika library (libmsk)
-Name: libmsk
+Summary: The mooshika library (libmooshika)
+Name: libmooshika
 Version: 0.1
 Release: 1
 Group: Application/Devel
@@ -13,7 +13,7 @@ BuildRequires: librdmacm-devel, libibverbs-devel, gcc, automake, libtool
 
 %package devel
 Group: Application/Devel
-Summary: Development files for libmsk
+Summary: Development files for libmooshika
 Requires: librdmacm-devel, libibverbs-devel
 
 %description devel

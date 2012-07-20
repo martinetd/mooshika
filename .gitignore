@@ -7,8 +7,8 @@ doxygen
 *~
 m4
 \#*\#
-libmsk-*.tar.gz
-libmsk.spec
+libmooshika-*.tar.gz
+libmooshika.spec
 cscope*
 Makefile
 Makefile.in
