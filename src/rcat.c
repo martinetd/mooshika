@@ -55,12 +55,14 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 	msk_data_t *pdata = datamr->data;
 
 	if (pdata->size != 1 || pdata->data[0] != '\0') {
+	// either we get real data and write it to stdout
 		write(1, (char *)pdata->data, pdata->size);
 		fflush(stdout);
 
 		msk_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
 		msk_post_send(trans, datamr->ackdata, 1, datamr->mr, NULL, NULL);
 	} else {
+	// or we get an ack and just send a signal to handle_thread thread
 		msk_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
 
 		pthread_mutex_lock(datamr->lock);
@@ -78,38 +80,43 @@ void* handle_trans(void *arg) {
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 	msk_data_t *wdata;
-
-
-	TEST_NZ(rdmabuf = malloc((RECV_NUM+2)*CHUNK_SIZE*sizeof(char)));
-	memset(rdmabuf, 0, (RECV_NUM+2)*CHUNK_SIZE*sizeof(char));
-	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, (RECV_NUM+2)*CHUNK_SIZE*sizeof(char), IBV_ACCESS_LOCAL_WRITE));
-
-
-
 	msk_data_t *ackdata;
-	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)));
-	ackdata->data = rdmabuf+(RECV_NUM+1)*CHUNK_SIZE*sizeof(char);
-	ackdata->max_size = CHUNK_SIZE*sizeof(char);
-	ackdata->size = 1;
-	ackdata->data[0] = 0;
 
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
-
-	pthread_mutex_init(&lock, NULL);
-	pthread_cond_init(&cond, NULL);
 
 	msk_data_t **rdata;
 	struct datamr *datamr;
 	int i;
 
+	struct pollfd pollfd_stdin;
+
+
+	// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
+#define RDMABUF_SIZE (RECV_NUM+2)*CHUNK_SIZE
+	TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
+	memset(rdmabuf, 0, RDMABUF_SIZE);
+	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
+
+
+	// malloc mooshika's data structs (i.e. max_size+size+pointer to actual data), for ack buffer
+	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)));
+	ackdata->data = rdmabuf+(RECV_NUM+1)*CHUNK_SIZE;
+	ackdata->max_size = CHUNK_SIZE;
+	ackdata->size = 1;
+	ackdata->data[0] = 0;
+
+	pthread_mutex_init(&lock, NULL);
+	pthread_cond_init(&cond, NULL);
+
+	// malloc receive structs as well as a custom callback argument, and post it for future receive
 	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
 	TEST_NZ(datamr = malloc(RECV_NUM*sizeof(struct datamr)));
 
 	for (i=0; i < RECV_NUM; i++) {
 		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
-		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
-		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
+		rdata[i]->data=rdmabuf+i*CHUNK_SIZE;
+		rdata[i]->max_size=CHUNK_SIZE;
 		datamr[i].data = rdata[i];
 		datamr[i].mr = mr;
 		datamr[i].ackdata = ackdata; 
@@ -120,17 +127,18 @@ void* handle_trans(void *arg) {
 
 	trans->private_data = datamr;
 
+	// receive buffers are posted, we can finalize the connection
 	if (trans->server) {
 		TEST_Z(msk_finalize_accept(trans));
 	} else {
 		TEST_Z(msk_finalize_connect(trans));
 	}
 
+	// malloc write (send) structs to post data read from stdin
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
-	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE*sizeof(char);
-	wdata->max_size = CHUNK_SIZE*sizeof(char);
+	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE;
+	wdata->max_size = CHUNK_SIZE;
 
-	struct pollfd pollfd_stdin;
 	pollfd_stdin.fd = 0; // stdin
 	pollfd_stdin.events = POLLIN | POLLPRI;
 	pollfd_stdin.revents = 0;
@@ -149,6 +157,7 @@ void* handle_trans(void *arg) {
 		if (wdata->size == 0)
 			break;
 
+		// post our data and wait for the other end's ack (sent in callback_recv)
 		pthread_mutex_lock(&lock);
 		TEST_Z(msk_post_send(trans, wdata, 1, mr, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
@@ -163,22 +172,12 @@ void* handle_trans(void *arg) {
 
 int main(int argc, char **argv) {
 
-
 	msk_trans_t *trans;
 	msk_trans_t *child_trans;
 
 	msk_trans_attr_t attr;
 
 	int mt_server = 0;
-
-	memset(&attr, 0, sizeof(msk_trans_attr_t));
-
-	attr.server = -1; // put an incorrect value to check if we're either client or server
-	// sane values for optional or non-configurable elements
-	attr.rq_depth = RECV_NUM+2;
-	attr.addr.sa_in.sin_family = AF_INET;
-	attr.addr.sa_in.sin_port = htons(1235);
-	attr.disconnect_callback = callback_disconnect;
 
 	// argument handling
 	static struct option long_options[] = {
@@ -192,6 +191,16 @@ int main(int argc, char **argv) {
 
 	int option_index = 0;
 	int op;
+
+	memset(&attr, 0, sizeof(msk_trans_attr_t));
+
+	attr.server = -1; // put an incorrect value to check if we're either client or server
+	// sane values for optional or non-configurable elements
+	attr.rq_depth = RECV_NUM+2;
+	attr.addr.sa_in.sin_family = AF_INET;
+	attr.addr.sa_in.sin_port = htons(1235);
+	attr.disconnect_callback = callback_disconnect;
+
 	while ((op = getopt_long(argc, argv, "@hvmsS:c:p:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
@@ -245,8 +254,10 @@ int main(int argc, char **argv) {
 
 
 	if (trans->server) {
-		TEST_Z(msk_bind_server(trans));
+		pthread_t id;
 		pthread_attr_t attr_thr;
+
+		TEST_Z(msk_bind_server(trans));
 
 		/* Init for thread parameter (mostly for scheduling) */
 		if(pthread_attr_init(&attr_thr) != 0)
@@ -257,7 +268,6 @@ int main(int argc, char **argv) {
 
 		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 			ERROR_LOG("can't set pthread's join state");
-		pthread_t id;
 
 
 		if (mt_server) {
@@ -283,4 +293,3 @@ int main(int argc, char **argv) {
 
 	return 0;
 }
-
