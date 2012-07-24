@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
 		memcpy(wdata->data, "roses are red", 14);
 		wdata->size = 14;
 
-		TEST_Z(msk_post_write(trans, wdata, mr, rloc, callback_recv, &datamr));
+		TEST_Z(msk_post_write(trans, wdata, 1, mr, rloc, callback_recv, &datamr));
 
 		printf("waiting for write to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // write done
@@ -211,7 +211,7 @@ int main(int argc, char **argv) {
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 
 		wdata->size=17;
-		TEST_Z(msk_post_read(trans, wdata, mr, rloc, callback_recv, &datamr));
+		TEST_Z(msk_post_read(trans, wdata, 1, mr, rloc, callback_recv, &datamr));
 
 		printf("wait for read to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));
