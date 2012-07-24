@@ -53,7 +53,7 @@ void callback_read(msk_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
 
 	if (trans->state == MSK_CONNECTED && *datamr->count < SEND_COUNT)
-		TEST_Z(msk_post_RW(trans, datamr->data, datamr->mr, datamr->rloc, callback_read, datamr));
+		TEST_Z(msk_post_RW(trans, datamr->data, 1, datamr->mr, datamr->rloc, callback_read, datamr));
 
 	*datamr->count += 1;
 	pthread_cond_signal(datamr->cond);
@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
 			rdata[i]->size=CHUNK_SIZE*sizeof(char);
 			datamr[i].rloc = rloc;
 			datamr[i].count = &count;
-			TEST_Z(msk_post_RW(trans, rdata[i], mr, rloc, callback_read, &(datamr[i])));
+			TEST_Z(msk_post_RW(trans, rdata[i], 1, mr, rloc, callback_read, &(datamr[i])));
 		}
 
 		while (count < SEND_COUNT) {
