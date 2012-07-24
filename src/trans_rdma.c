@@ -751,7 +751,7 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 }
 
 /**
- * msk_accept: does the real connection acceptance //FIXME it's still called by accept_one, either make it static again or don't call it in accept_one...
+ * msk_finalize_accept: does the real connection acceptance and wait for other side to be ready
  *
  * @param trans [IN]
  *
@@ -912,8 +912,11 @@ static int msk_bind_client(msk_trans_t *trans) {
 }
 
 /**
- * msk_connect_client: does the actual connection to the server //FIXME: do we want to remove the static to allow for post_recv before connecting?
+ * msk_finalize_connect: tells the other side we're ready to receive stuff (does the actual rdma_connect) and waits for its ack
  *
+ * @param trans [IN]
+ *
+ * @return 0 on success, errno value on failure
  */
 int msk_finalize_connect(msk_trans_t *trans) {
 	struct rdma_conn_param conn_param;
@@ -995,6 +998,7 @@ int msk_connect(msk_trans_t *trans) {
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans        [IN]
  * @param pdata        [OUT] the data buffer to be filled with received data
+ * @param num_sge      [IN]  the number of elements in pdata to register
  * @param mr           [IN]  the mr in which the data lives
  * @param callback     [IN]  function that'll be called when done
  * @param callback_arg [IN]  argument to give to the callback
@@ -1138,7 +1142,8 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
  * Post a send buffer.
  *
  * @param trans        [IN]
- * @param data         [IN] the data buffer to be sent
+ * @param pdata        [IN] the data buffer to be sent
+ * @param num_sge      [IN] the number of elements in pdata to send
  * @param mr           [IN] the mr in which the data lives
  * @param callback     [IN] function that'll be called when done
  * @param callback_arg [IN] argument to give to the callback
@@ -1162,9 +1167,10 @@ static void msk_wait_callback(msk_trans_t *trans, void *arg) {
  * Post a receive buffer and waits for _that one and not any other_ to be filled.
  * Generally a bad idea to use that one unless only that one is used.
  *
- * @param trans [IN]
- * @param pdata [OUT] the data buffer to be filled with the received data
- * @param mr    [IN]  the memory region in which data lives
+ * @param trans   [IN]
+ * @param pdata   [OUT] the data buffer to be filled with the received data
+ * @param num_sge [IN] the number of elements in pdata to register
+ * @param mr      [IN]  the memory region in which data lives
  *
  * @return 0 on success, the value of errno on error
  */
@@ -1186,9 +1192,10 @@ int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
 
 /**
  * Post a send buffer and waits for that one to be completely sent
- * @param trans [IN]
- * @param data  [IN] the data to send
- * @param mr    [IN] the memory region in which data lives
+ * @param trans   [IN]
+ * @param pdata   [IN] the data to send
+ * @param num_sge [IN] the number of elements in pdata to send
+ * @param mr      [IN] the memory region in which data lives
  *
  * @return 0 on success, the value of errno on error
  */
@@ -1214,20 +1221,20 @@ int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
 // server specific:
 
 
-int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, 1, mr, rloc, callback, callback_arg);
+int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, num_sge, mr, rloc, callback, callback_arg);
 }
 
-int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, 1, mr, rloc, callback, callback_arg);
+int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, num_sge, mr, rloc, callback, callback_arg);
 }
 
-int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
+int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_read(trans, pdata, mr, rloc, msk_wait_callback, &lock);
+	ret = msk_post_read(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1239,12 +1246,12 @@ int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_
 }
 
 
-int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
+int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_write(trans, pdata, mr, rloc, msk_wait_callback, &lock);
+	ret = msk_post_write(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);

@@ -172,7 +172,7 @@ void* handle_trans(void *arg) {
 	free(datamr);
 	free(rdata);
 	free(ackdata);
-	free(rdmadata);
+	free(rdmabuf);
 
 	pthread_exit(NULL);
 }
