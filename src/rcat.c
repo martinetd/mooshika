@@ -167,6 +167,13 @@ void* handle_trans(void *arg) {
 
 	msk_destroy_trans(&trans);
 
+	// free stuff
+	free(wdata);
+	free(datamr);
+	free(rdata);
+	free(ackdata);
+	free(rdmadata);
+
 	pthread_exit(NULL);
 }
 
