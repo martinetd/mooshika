@@ -1,7 +1,3 @@
-client
-server
-client_wait
-server_wait
 read_write
 bench_rdma
 nfsv4_client
