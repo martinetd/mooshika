@@ -18,7 +18,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "trans_rdma.h"
+#include "mooshika.h"
 
 #define CHUNK_SIZE 8*1024 // nfs page size
 #define RECV_NUM 4

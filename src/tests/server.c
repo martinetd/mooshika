@@ -10,7 +10,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "trans_rdma.h"
+#include "mooshika.h"
 
 void callback_send(msk_trans_t *trans, void *arg) {
         msk_data_t *pdata = arg;

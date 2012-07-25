@@ -48,7 +48,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "trans_rdma.h"
+#include "mooshika.h"
 
 #define SHM_KEY 4213
 #define SHM_SIZE 100*1024*1025

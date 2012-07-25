@@ -21,7 +21,7 @@
  */
 
 /**
- * \file	trans_rdma.h
+ * \file	mooshika.h
  * \brief	rdma helper include file
  *
  * This is (very) loosely based on a mix of diod, rping (librdmacm/examples)
@@ -29,8 +29,8 @@
  *
  */
 
-#ifndef _TRANS_RDMA_H
-#define _TRANS_RDMA_H
+#ifndef _MOOSHIKA_H
+#define _MOOSHIKA_H
 
 typedef struct msk_trans msk_trans_t;
 typedef struct msk_trans_attr msk_trans_attr_t;
@@ -164,4 +164,4 @@ void msk_destroy_trans(msk_trans_t **ptrans);
 int msk_connect(msk_trans_t *trans);
 int msk_finalize_connect(msk_trans_t *trans);
 
-#endif /* _TRANS_RDMA_H */
+#endif /* _MOOSHIKA_H */

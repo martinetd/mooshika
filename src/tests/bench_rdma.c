@@ -15,7 +15,7 @@
 #include <rdma/rdma_cma.h>
 
 #include "log.h"
-#include "trans_rdma.h"
+#include "mooshika.h"
 
 #define CHUNK_SIZE 1024*1024
 #define SEND_COUNT 10000
