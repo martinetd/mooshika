@@ -80,8 +80,6 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 	fwrite("\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11", 0x10, sizeof(char), priv->logfd);
 	fflush(priv->logfd);
 
-	usleep(10000);
-
 	msk_post_send(priv->o_trans, data, 1, priv->mr, callback_send, datalock);
 }
 

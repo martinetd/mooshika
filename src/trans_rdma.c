@@ -299,7 +299,17 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			}
 
 			ctx = (msk_ctx_t *)wc.wr_id;
-			(ctx->pdata[0]).size = wc.byte_len; //FIXME num_sge
+			
+			// fill all the sizes in case of multiple sge
+			int len = wc.byte_len;
+			int i = 0;
+			while (len > ctx->pdata[i].max_size) {
+				ctx->pdata[i].size = ctx->pdata[i].max_size;
+				len -= ctx->pdata[i].max_size;
+				i++; // wc.status being success makes sure we never get out of bounds
+			}
+			ctx->pdata[i].size = len;
+
 			if (ctx->callback)
 				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
 
@@ -1028,6 +1038,7 @@ int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
 
 	for (i=0; i < num_sge; i++) {
 		rctx->sg_list[i].addr = (uintptr_t) (rctx->pdata[i]).data;
+		INFO_LOG("addr: %lx\n", rctx->sg_list[i].addr);
 		rctx->sg_list[i].length = rctx->pdata[i].max_size;
 		rctx->sg_list[i].lkey = mr->lkey;
 	}
@@ -1096,6 +1107,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 			break;
 		}
 		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i]).data;
+		INFO_LOG("addr: %lx\n", wctx->sg_list[i].addr);
 		wctx->sg_list[i].length = (wctx->pdata[i]).size;
 		wctx->sg_list[i].lkey = mr->lkey;
 
