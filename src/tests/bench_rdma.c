@@ -53,7 +53,7 @@ void callback_read(msk_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
 
 	if (trans->state == MSK_CONNECTED && *datamr->count < SEND_COUNT)
-		TEST_Z(msk_post_RW(trans, datamr->data, 1, datamr->mr, datamr->rloc, callback_read, datamr));
+		TEST_Z(msk_post_RW(trans, datamr->data, datamr->mr, datamr->rloc, callback_read, datamr));
 
 	*datamr->count += 1;
 	pthread_cond_signal(datamr->cond);
@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
 	}
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(msk_post_recv(trans, rdata[0], 1, mr, callback_recv, &(datamr[0]))); // post only one, others will be used for reads
+	TEST_Z(msk_post_recv(trans, rdata[0], mr, callback_recv, &(datamr[0]))); // post only one, others will be used for reads
 
 	if (trans->server) {
 		TEST_Z(msk_finalize_accept(trans));
@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
 			rdata[i]->size=CHUNK_SIZE*sizeof(char);
 			datamr[i].rloc = rloc;
 			datamr[i].count = &count;
-			TEST_Z(msk_post_RW(trans, rdata[i], 1, mr, rloc, callback_read, &(datamr[i])));
+			TEST_Z(msk_post_RW(trans, rdata[i], mr, rloc, callback_read, &(datamr[i])));
 		}
 
 		while (count < SEND_COUNT) {
@@ -229,7 +229,7 @@ int main(int argc, char **argv) {
 		printf("count: %d\n", count);
 
 		wdata->size = 1;
-		TEST_Z(msk_post_send(trans, wdata, 1, mr, NULL, NULL)); // ack - other can quit
+		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL)); // ack - other can quit
 		usleep(10000); //FIXME: wait till last work request is done. cannot use wait_send because the other will get the send before we get our ack, so they might disconnect and our threads might fail before we get our WC that would unstuck us.
 
 	} else {
@@ -237,7 +237,7 @@ int main(int argc, char **argv) {
 
 		memcpy(wdata->data, rloc, sizeof(msk_rloc_t));
 		wdata->size = sizeof(msk_rloc_t);
-		msk_post_send(trans, wdata, 1, mr, NULL, NULL);
+		msk_post_send(trans, wdata, mr, NULL, NULL);
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)

@@ -53,7 +53,7 @@ void callback_send(msk_trans_t *trans, void *arg) {
 		return;
 	}
 
-	msk_post_recv(priv->o_trans, datalock->data, NUM_SGE, priv->mr, callback_recv, datalock);
+	msk_post_n_recv(priv->o_trans, datalock->data, NUM_SGE, priv->mr, callback_recv, datalock);
 }
 
 void callback_disconnect(msk_trans_t *trans) {
@@ -80,7 +80,7 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 	fwrite("\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11", 0x10, sizeof(char), priv->logfd);
 	fflush(priv->logfd);
 
-	msk_post_send(priv->o_trans, data, 1, priv->mr, callback_send, datalock);
+	msk_post_send(priv->o_trans, data, priv->mr, callback_send, datalock);
 }
 
 void print_help(char **argv) {
@@ -99,7 +99,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(msk_post_recv(trans, &priv->first_rdata[NUM_SGE*i], NUM_SGE, mr, callback_recv, &(priv->first_datalock[i])));
+		TEST_Z(msk_post_n_recv(trans, &priv->first_rdata[NUM_SGE*i], NUM_SGE, mr, callback_recv, &(priv->first_datalock[i])));
 
 	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
