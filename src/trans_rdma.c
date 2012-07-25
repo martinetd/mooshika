@@ -993,7 +993,7 @@ int msk_connect(msk_trans_t *trans) {
 
 
 /**
- * msk_post_recv: Post a receive buffer.
+ * msk_post_n_recv: Post a receive buffer.
  *
  * Need to post recv buffers before the opposite side tries to send anything!
  * @param trans        [IN]
@@ -1005,7 +1005,7 @@ int msk_connect(msk_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	INFO_LOG("posting recv");
 	msk_ctx_t *rctx;
 	int i, ret;
@@ -1150,7 +1150,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int msk_post_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
 	return msk_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, callback_arg);
 }
 
@@ -1174,12 +1174,12 @@ static void msk_wait_callback(msk_trans_t *trans, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr) {
+int msk_wait_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_recv(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
+	ret = msk_post_n_recv(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1199,12 +1199,12 @@ int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr) {
+int msk_wait_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_send(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
+	ret = msk_post_n_send(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1221,20 +1221,20 @@ int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
 // server specific:
 
 
-int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+int msk_post_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
 	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, num_sge, mr, rloc, callback, callback_arg);
 }
 
-int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+int msk_post_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
 	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, num_sge, mr, rloc, callback, callback_arg);
 }
 
-int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
+inline int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_read(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
+	ret = msk_post_n_read(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1246,12 +1246,12 @@ int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv
 }
 
 
-int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
+inline int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_write(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
+	ret = msk_post_n_write(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1262,6 +1262,37 @@ int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ib
 	return ret;
 }
 
+
+inline int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg) {
+	return msk_post_n_recv(trans, pdata, 1, mr, callback, callback_arg);
+}
+inline int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg) {
+	return msk_post_n_send(trans, pdata, 1, mr, callback, callback_arg);
+}
+
+inline int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr) {
+	return msk_wait_n_recv(trans, pdata, 1, mr);
+}
+
+inline int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr) {
+	return msk_wait_n_send(trans, pdata, 1, mr);
+}
+
+inline int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_n_read(trans, pdata, 1, mr, rloc, callback, callback_arg);
+}
+
+inline int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_n_write(trans, pdata, 1, mr, rloc, callback, callback_arg);
+}
+
+inline int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
+	return msk_wait_n_read(trans, pdata, 1, mr, rloc);
+}
+
+inline int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
+	return msk_wait_n_write(trans, pdata, 1, mr, rloc);
+}
 
 // client specific:
 int msk_write_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_write server side ~= msk_read

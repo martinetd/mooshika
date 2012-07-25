@@ -175,7 +175,7 @@ int main(int argc, char **argv) {
 	datamr.cond = &cond;
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(msk_post_recv(trans, rdata, 1, mr, callback_recv, &datamr));
+	TEST_Z(msk_post_recv(trans, rdata, mr, callback_recv, &datamr));
 
 	if (trans->server) {
 		TEST_Z(msk_finalize_accept(trans));
@@ -200,26 +200,26 @@ int main(int argc, char **argv) {
 		memcpy(wdata->data, "roses are red", 14);
 		wdata->size = 14;
 
-		TEST_Z(msk_post_write(trans, wdata, 1, mr, rloc, callback_recv, &datamr));
+		TEST_Z(msk_post_write(trans, wdata, mr, rloc, callback_recv, &datamr));
 
 		printf("waiting for write to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // write done
 
-		TEST_Z(msk_post_recv(trans, rdata, 1, mr, callback_recv, &datamr));
-		TEST_Z(msk_post_send(trans, wdata, 1, mr, NULL, NULL)); // ack to say we're done
+		TEST_Z(msk_post_recv(trans, rdata, mr, callback_recv, &datamr));
+		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL)); // ack to say we're done
 
 		printf("waiting for something to be ready to read\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 
 		wdata->size=17;
-		TEST_Z(msk_post_read(trans, wdata, 1, mr, rloc, callback_recv, &datamr));
+		TEST_Z(msk_post_read(trans, wdata, mr, rloc, callback_recv, &datamr));
 
 		printf("wait for read to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 
 		printf("%s\n", wdata->data);
 
-		TEST_Z(msk_wait_send(trans, wdata, 1, mr)); // ack - other can quit
+		TEST_Z(msk_wait_send(trans, wdata, mr)); // ack - other can quit
 
 
 	} else {
@@ -227,17 +227,17 @@ int main(int argc, char **argv) {
 
 		memcpy(wdata->data, rloc, sizeof(msk_rloc_t));
 		wdata->size = sizeof(msk_rloc_t);
-		msk_post_send(trans, wdata, 1, mr, NULL, NULL);
+		msk_post_send(trans, wdata, mr, NULL, NULL);
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)
 
 		printf("%s\n", ackdata->data);
 
-		TEST_Z(msk_post_recv(trans, rdata, 1, mr, callback_recv, &datamr));
+		TEST_Z(msk_post_recv(trans, rdata, mr, callback_recv, &datamr));
 
 		memcpy(ackdata->data, "violets are blue", 17);
-		TEST_Z(msk_post_send(trans, wdata, 1, mr, NULL, NULL)); // say we've got something to read
+		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL)); // say we've got something to read
 
 		printf("waiting for server to be done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));

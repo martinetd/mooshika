@@ -16,7 +16,6 @@
 
 #include "log.h"
 #include "mooshika.h"
-#include "nfsv4.h"
 
 #define CHUNK_SIZE 10
 #define RECV_NUM 1
@@ -178,7 +177,7 @@ int main(int argc, char **argv) {
 
 	pthread_mutex_lock(&lock);
 	if (trans->server) // server receives, client sends
-		TEST_Z(msk_post_recv(trans, rdata, NUM_SGE, mr, callback_recv, &datalock));
+		TEST_Z(msk_post_n_recv(trans, rdata, NUM_SGE, mr, callback_recv, &datalock));
 
 
 	if (trans->server) {
@@ -201,7 +200,7 @@ int main(int argc, char **argv) {
 		memcpy(rdata[1].data, "0123456", 8);
 		rdata[1].size = 8;
 
-		TEST_Z(msk_post_send(trans, rdata, NUM_SGE, mr, callback_recv, &datalock));
+		TEST_Z(msk_post_n_send(trans, rdata, NUM_SGE, mr, callback_recv, &datalock));
 
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 

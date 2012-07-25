@@ -59,11 +59,11 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 		write(1, (char *)pdata->data, pdata->size);
 		fflush(stdout);
 
-		msk_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
-		msk_post_send(trans, datamr->ackdata, 1, datamr->mr, NULL, NULL);
+		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
+		msk_post_send(trans, datamr->ackdata, datamr->mr, NULL, NULL);
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		msk_post_recv(trans, pdata, 1, datamr->mr, callback_recv, datamr);
+		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
 
 		pthread_mutex_lock(datamr->lock);
 		pthread_cond_signal(datamr->cond);
@@ -122,7 +122,7 @@ void* handle_trans(void *arg) {
 		datamr[i].ackdata = ackdata; 
 		datamr[i].lock = &lock;
 		datamr[i].cond = &cond;
-		TEST_Z(msk_post_recv(trans, rdata[i], 1, mr, callback_recv, &(datamr[i])));
+		TEST_Z(msk_post_recv(trans, rdata[i], mr, callback_recv, &(datamr[i])));
 	}
 
 	trans->private_data = datamr;
@@ -159,7 +159,7 @@ void* handle_trans(void *arg) {
 
 		// post our data and wait for the other end's ack (sent in callback_recv)
 		pthread_mutex_lock(&lock);
-		TEST_Z(msk_post_send(trans, wdata, 1, mr, NULL, NULL));
+		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	
