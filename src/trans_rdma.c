@@ -653,19 +653,19 @@ static int msk_setup_qp(msk_trans_t *trans) {
  * msk_setup_buffer
  */
 static int msk_setup_buffer(msk_trans_t *trans) {
-	trans->recv_buf = malloc(trans->rq_depth * sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
+	trans->recv_buf = malloc(trans->rq_depth * (sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge)));
 	if (!trans->recv_buf) {
 		ERROR_LOG("couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
-	memset(trans->recv_buf, 0, trans->rq_depth * sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge));
+	memset(trans->recv_buf, 0, trans->rq_depth * (sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge)));
 
-	trans->send_buf = malloc(trans->sq_depth * sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
+	trans->send_buf = malloc(trans->sq_depth * (sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge)));
 	if (!trans->send_buf) {
 		ERROR_LOG("couldn't malloc trans->send_buf");
 		return ENOMEM;
 	}
-	memset(trans->send_buf, 0, trans->sq_depth * sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge));
+	memset(trans->send_buf, 0, trans->sq_depth * (sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge)));
 
 	return 0;
 }
