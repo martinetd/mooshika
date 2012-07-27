@@ -1,5 +1,5 @@
 AC_INIT([libmooshika], [0.1], [dominique.martinet.ocre@cea.fr])
-AM_INIT_AUTOMAKE([-Wall -Werror])
+AM_INIT_AUTOMAKE([foreign])
 
 AC_CONFIG_MACRO_DIR([m4])
 
@@ -48,6 +48,6 @@ AM_CONDITIONAL(USE_SHM, test "x$enable_shm" = "xyes")
 #for exporting to spec file
 AC_SUBST(ac_configure_args)
 
-AC_CONFIG_HEADERS([config.h])
+AC_CONFIG_HEADERS([include/config.h])
 AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libmooshika.pc libmooshika.spec])
 AC_OUTPUT

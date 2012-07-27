@@ -26,4 +26,5 @@ doc:
 	cd doxygen/latex; make pdf
 
 EXTRA_DIST=libmooshika.spec \
-           src/log.h
+           src/log.h \
+           LICENSE
