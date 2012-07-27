@@ -17,9 +17,9 @@
 #include "log.h"
 #include "mooshika.h"
 
-#define CHUNK_SIZE 8*1024
-#define RECV_NUM 5
-#define NUM_THREADS 4
+#define CHUNK_SIZE 1024*1024
+#define RECV_NUM 18
+#define NUM_THREADS 16
 
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
@@ -27,12 +27,12 @@
 struct datamr {
 	msk_data_t *data;
 	struct ibv_mr *mr;
-	msk_data_t *ackdata;
 };
 
 struct locks {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
+	msk_data_t *ackdata;
 };
 
 void callback_send(msk_trans_t *trans, void *arg) {
@@ -66,6 +66,9 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 	}
 
 	msk_data_t *pdata = datamr->data;
+	int i = (int)pdata->data[0];
+
+//	printf("got stuff from %d\n", i);
 
 	if (pdata->size != 1) {
 	// either we get real data and write it to stdout (do we want to bother writing it?)
@@ -73,12 +76,11 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 		fflush(stdout);
 
 		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
-		msk_post_send(trans, datamr->ackdata, datamr->mr, NULL, NULL);
+		msk_post_send(trans, locks[i].ackdata, datamr->mr, NULL, NULL);
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
 		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
 
-		int i = (int)pdata->data[0];
 		pthread_mutex_lock(&locks[i].lock);
 		pthread_cond_signal(&locks[i].cond);
 		pthread_mutex_unlock(&locks[i].lock);
@@ -94,7 +96,6 @@ void* handle_trans(void *arg) {
 	msk_trans_t *trans = arg;
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
-	msk_data_t *wdata;
 	msk_data_t *ackdata;
 
 	msk_data_t **rdata;
@@ -103,20 +104,14 @@ void* handle_trans(void *arg) {
 	int i;
 
 	// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
-#define RDMABUF_SIZE (RECV_NUM+2)*CHUNK_SIZE
+#define RDMABUF_SIZE (RECV_NUM+NUM_THREADS+2)*CHUNK_SIZE
 	TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
 	memset(rdmabuf, 0, RDMABUF_SIZE);
 	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
 
 
 	// malloc mooshika's data structs (i.e. max_size+size+pointer to actual data), for ack buffer
-	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)));
-	ackdata->data = rdmabuf+(RECV_NUM+1)*CHUNK_SIZE;
-	ackdata->max_size = CHUNK_SIZE;
-	ackdata->size = 1;
-	ackdata->data[0] = 0;
-
-
+	TEST_NZ(ackdata = malloc(NUM_THREADS*sizeof(msk_data_t)));
 	// malloc receive structs as well as a custom callback argument, and post it for future receive
 	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
 	TEST_NZ(datamr = malloc(NUM_THREADS*RECV_NUM*sizeof(struct datamr)));
@@ -128,12 +123,17 @@ void* handle_trans(void *arg) {
 		rdata[i]->max_size=CHUNK_SIZE;
 		datamr[i].data = rdata[i];
 		datamr[i].mr = mr;
-		datamr[i].ackdata = ackdata; 
 		TEST_Z(msk_post_recv(trans, rdata[i], mr, callback_recv, &(datamr[i])));
 	}
 	for (i=0; i < NUM_THREADS; i++) {
 		pthread_mutex_init(&locks[i].lock, NULL);
 		pthread_cond_init(&locks[i].cond, NULL);
+		locks[i].ackdata = &ackdata[i];
+		locks[i].ackdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE+i;
+		locks[i].ackdata->max_size = 1;
+		locks[i].ackdata->size = 1;
+		locks[i].ackdata->data[0] = i;
+
 	}
 
 	trans->private_data = locks;
@@ -148,18 +148,23 @@ void* handle_trans(void *arg) {
 
 	void *sendstuff(void *arg) {
 		int num = *(int*)arg;
+		msk_data_t *wdata;
+
+//		printf("starting thread %d\n", num);
 
 		// malloc write (send) structs to post data read from stdin
 		TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
-		wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE;
+		wdata->data = rdmabuf+(RECV_NUM+1+num)*CHUNK_SIZE;
 		wdata->max_size = CHUNK_SIZE;
 		wdata->size = CHUNK_SIZE;
+		wdata->data[0] = num;
 
 		pthread_mutex_lock(&locks[num].lock);
 		while (trans->state == MSK_CONNECTED) {
 
 			TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL));
 			pthread_cond_wait(&locks[num].cond, &locks[num].lock);
+//			printf("got cond on thread %d\n", num);
 		}	
 		pthread_mutex_unlock(&locks[num].lock);
 
@@ -169,7 +174,9 @@ void* handle_trans(void *arg) {
 	}
 
 	if (trans->server) {
-		sleep(100);
+		while (trans->state == MSK_CONNECTED) {
+			usleep(100000);
+		}
 	} else {
 		pthread_t *id;
 		int *nums;
@@ -199,6 +206,7 @@ void* handle_trans(void *arg) {
 		free(id);
 		free(nums);
 	}
+
 	msk_destroy_trans(&trans);
 
 	// free stuff
@@ -237,7 +245,8 @@ int main(int argc, char **argv) {
 
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
-	attr.rq_depth = RECV_NUM+2;
+	attr.rq_depth = RECV_NUM+3;
+	attr.sq_depth = NUM_THREADS+1;
 	attr.addr.sa_in.sin_family = AF_INET;
 	attr.addr.sa_in.sin_port = htons(1235);
 	attr.disconnect_callback = callback_disconnect;
