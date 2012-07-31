@@ -1263,37 +1263,6 @@ inline int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, 
 }
 
 
-inline int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg) {
-	return msk_post_n_recv(trans, pdata, 1, mr, callback, callback_arg);
-}
-inline int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg) {
-	return msk_post_n_send(trans, pdata, 1, mr, callback, callback_arg);
-}
-
-inline int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr) {
-	return msk_wait_n_recv(trans, pdata, 1, mr);
-}
-
-inline int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr) {
-	return msk_wait_n_send(trans, pdata, 1, mr);
-}
-
-inline int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_n_read(trans, pdata, 1, mr, rloc, callback, callback_arg);
-}
-
-inline int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_n_write(trans, pdata, 1, mr, rloc, callback, callback_arg);
-}
-
-inline int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
-	return msk_wait_n_read(trans, pdata, 1, mr, rloc);
-}
-
-inline int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
-	return msk_wait_n_write(trans, pdata, 1, mr, rloc);
-}
-
 // client specific:
 int msk_write_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_write server side ~= msk_read
 int msk_read_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_read server side ~= msk_write
