@@ -125,16 +125,6 @@ typedef struct msk_rloc {
 } msk_rloc_t;
 
 
-__inline__ int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
-__inline__ int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
-
-__inline__ int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr);
-__inline__ int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr);
-
-__inline__ int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
-__inline__ int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
-__inline__ int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc);
-__inline__ int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc);
 
 int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
 int msk_post_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg);
@@ -144,6 +134,37 @@ int msk_post_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 int msk_post_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg);
 int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc);
 int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc);
+
+static inline int msk_post_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg) {
+	return msk_post_n_recv(trans, pdata, 1, mr, callback, callback_arg);
+}
+static inline int msk_post_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, ctx_callback_t callback, void *callback_arg) {
+	return msk_post_n_send(trans, pdata, 1, mr, callback, callback_arg);
+}
+
+static inline int msk_wait_recv(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr) {
+	return msk_wait_n_recv(trans, pdata, 1, mr);
+}
+
+static inline int msk_wait_send(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr) {
+	return msk_wait_n_send(trans, pdata, 1, mr);
+}
+
+static inline int msk_post_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_n_read(trans, pdata, 1, mr, rloc, callback, callback_arg);
+}
+
+static inline int msk_post_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+	return msk_post_n_write(trans, pdata, 1, mr, rloc, callback, callback_arg);
+}
+
+static inline int msk_wait_read(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
+	return msk_wait_n_read(trans, pdata, 1, mr, rloc);
+}
+
+static inline int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct ibv_mr *mr, msk_rloc_t *rloc) {
+	return msk_wait_n_write(trans, pdata, 1, mr, rloc);
+}
 
 /*
 // client side
