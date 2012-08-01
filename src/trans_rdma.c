@@ -1229,7 +1229,7 @@ int msk_post_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct 
 	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, num_sge, mr, rloc, callback, callback_arg);
 }
 
-inline int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
+int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -1246,7 +1246,7 @@ inline int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, s
 }
 
 
-inline int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
+int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -1263,6 +1263,21 @@ inline int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, 
 }
 
 
-// client specific:
-int msk_write_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_write server side ~= msk_read
-int msk_read_request(msk_trans_t *trans, msk_rloc_t *msk_rloc, size_t size); // = ask for msk_read server side ~= msk_write
+struct sockaddr *msk_get_peer_addr(struct rdma_cm_id *id) {
+	return rdma_get_peer_addr(id);
+}
+
+struct sockaddr *msk_get_local_addr(struct rdma_cm_id *id) {
+	return rdma_get_local_addr(id);
+}
+
+uint16_t msk_get_src_port(struct rdma_cm_id *id) {
+	return rdma_get_src_port(id);
+}
+
+uint16_t msk_get_dst_port(struct rdma_cm_id *id) {
+	return rdma_get_dst_port(id);
+}
+
+
+
