@@ -166,19 +166,6 @@ static inline int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct i
 	return msk_wait_n_write(trans, pdata, 1, mr, rloc);
 }
 
-/*
-// client side
-int msk_write_request(trans, msk_rloc, size); // = ask for rdma_write server side ~= rdma_read
-int msk_read_request(trans, msk_rloc, size); // = ask for rdma_read server side ~= rdma_write
-*/
-
-
-struct ibv_mr *msk_reg_mr(msk_trans_t *trans, void *memaddr, size_t size, int access);
-int msk_dereg_mr(struct ibv_mr *mr);
-
-msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size);
-
-void msk_print_devinfo(msk_trans_t *trans);
 
 
 int msk_init(msk_trans_t **trans, msk_trans_attr_t *attr);
@@ -192,5 +179,23 @@ void msk_destroy_trans(msk_trans_t **ptrans);
 
 int msk_connect(msk_trans_t *trans);
 int msk_finalize_connect(msk_trans_t *trans);
+
+
+/* utility functions */
+
+struct ibv_mr *msk_reg_mr(msk_trans_t *trans, void *memaddr, size_t size, int access);
+int msk_dereg_mr(struct ibv_mr *mr);
+
+msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size);
+
+void msk_print_devinfo(msk_trans_t *trans);
+
+struct sockaddr *msk_get_peer_addr(struct rdma_cm_id *id);
+struct sockaddr *msk_get_local_addr(struct rdma_cm_id *id);
+uint16_t msk_get_src_port(struct rdma_cm_id *id);
+uint16_t msk_get_dst_port(struct rdma_cm_id *id);
+
+
+
 
 #endif /* _MOOSHIKA_H */
