@@ -45,6 +45,7 @@ typedef struct msk_data {
 	uint32_t max_size; /**< size of the data field */
 	uint32_t size; /**< size of the data to actually send/read */
 	uint8_t *data; /**< opaque data */
+	struct msk_data *next; /**< For recv/sends with multiple elements, used as a linked list */
 } msk_data_t;
 
 typedef union sockaddr_union {
