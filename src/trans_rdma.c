@@ -294,7 +294,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			INFO_LOG("WC_RECV");
 
 			if (wc.wc_flags & IBV_WC_WITH_IMM) {
-				//FIXME ctx->pdata[0]->imm_data = ntohl(wc.imm_data);
+				//FIXME ctx->pdata->imm_data = ntohl(wc.imm_data);
 				ERROR_LOG("imm_data: %d", ntohl(wc.imm_data));
 			}
 
@@ -302,13 +302,14 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			
 			// fill all the sizes in case of multiple sge
 			int len = wc.byte_len;
-			int i = 0;
-			while (len > ctx->pdata[i].max_size) {
-				ctx->pdata[i].size = ctx->pdata[i].max_size;
-				len -= ctx->pdata[i].max_size;
-				i++; // wc.status being success makes sure we never get out of bounds
+			msk_data_t *pdata = ctx->pdata;
+			while (pdata && len > pdata->max_size) {
+				pdata->size = pdata->max_size;
+				len -= pdata->max_size;
+				pdata = pdata->next;
 			}
-			ctx->pdata[i].size = len;
+			if (pdata)
+				pdata->size = len;
 
 			if (ctx->callback)
 				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
@@ -1037,10 +1038,15 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	rctx->pdata = pdata;
 
 	for (i=0; i < num_sge; i++) {
-		rctx->sg_list[i].addr = (uintptr_t) (rctx->pdata[i]).data;
-		INFO_LOG("addr: %lx\n", rctx->sg_list[i].addr);
-		rctx->sg_list[i].length = rctx->pdata[i].max_size;
+		if (!pdata) {
+			ERROR_LOG("You said to recv %d elements (num_sge), but we only found %d! Not requesting.", num_sge, i);
+			return EINVAL;
+		} 
+		rctx->sg_list[i].addr = (uintptr_t) pdata->data;
+		INFO_LOG("addr: %lx\n", rctx->sg_list->addr);
+		rctx->sg_list[i].length = pdata->max_size;
 		rctx->sg_list[i].lkey = mr->lkey;
+		pdata = pdata->next; 
 	}
 
 	rctx->wr.rwr.next = NULL;
@@ -1061,6 +1067,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 	INFO_LOG("posting a send with op %d", opcode);
 	msk_ctx_t *wctx;
 	int i, ret;
+	uint32_t totalsize = 0;
 
 	// opcode-specific checks:
 	if (opcode == IBV_WR_RDMA_WRITE || opcode == IBV_WR_RDMA_READ) {
@@ -1102,19 +1109,28 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 	wctx->pdata = pdata;
 
 	for (i=0; i < num_sge; i++) {
-		if (wctx->pdata[i].size == 0) {
-			num_sge = i; // only send up to previous sg
+		if (!pdata) {
+			ERROR_LOG("You said to send %d elements (num_sge), but we only found %d! Not sending.", num_sge, i);
+			// or send up to previous one? It's probably an error though...
+			return EINVAL;
+		} 
+		if (pdata->size == 0) {
+			num_sge = i; // only send up to previous sg, do we want to warn about this?
 			break;
 		}
-		wctx->sg_list[i].addr = (uintptr_t)(wctx->pdata[i]).data;
-		INFO_LOG("addr: %lx\n", wctx->sg_list[i].addr);
-		wctx->sg_list[i].length = (wctx->pdata[i]).size;
-		wctx->sg_list[i].lkey = mr->lkey;
 
-		if (rloc && wctx->pdata[i].size > rloc->size) {
-			ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
-			return EMSGSIZE;
-		}
+		wctx->sg_list[i].addr = (uintptr_t)pdata->data;
+		INFO_LOG("addr: %lx\n", wctx->sg_list[i].addr);
+		wctx->sg_list[i].length = pdata->size;
+		wctx->sg_list[i].lkey = mr->lkey;
+		totalsize += pdata->size;
+
+		pdata = pdata->next;
+	}
+
+	if (rloc && totalsize > rloc->size) {
+		ERROR_LOG("trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
+		return EMSGSIZE;
 	}
 
 	wctx->wr.wwr.next = NULL;
