@@ -91,6 +91,7 @@ struct msk_trans {
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	int server;			/**< 0 if client, number of connections to accept on server */
+	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
 	msk_ctx_t *send_buf;		/**< pointer to actual context data */
 	msk_ctx_t *recv_buf;		/**< pointer to actual context data */
 	pthread_mutex_t lock;		/**< lock for events */
@@ -174,7 +175,6 @@ int msk_init(msk_trans_t **trans, msk_trans_attr_t *attr);
 // server specific:
 int msk_bind_server(msk_trans_t *trans);
 msk_trans_t *msk_accept_one(msk_trans_t *trans);
-int msk_start_cm_thread(msk_trans_t *trans);
 int msk_finalize_accept(msk_trans_t *trans);
 void msk_destroy_trans(msk_trans_t **ptrans);
 

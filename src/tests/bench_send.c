@@ -361,7 +361,6 @@ int main(int argc, char **argv) {
 			}
 		} else {
 			child_trans = msk_accept_one(trans);
-			TEST_Z(msk_start_cm_thread(trans));
 			handle_trans(child_trans);
 		}
 		msk_destroy_trans(&trans);
