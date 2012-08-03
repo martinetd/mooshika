@@ -137,9 +137,9 @@ void msk_print_devinfo(msk_trans_t *trans) {
  * msk_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone)
  *
  */
-static int msk_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event) {
+static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event *event) {
 	int ret = 0;
-	msk_trans_t *trans = cma_id->context;
+	msk_trans_t *trans = cm_id->context;
 
 	INFO_LOG("cma_event type %s", rdma_event_str(event->event));
 
@@ -155,12 +155,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event
 		INFO_LOG("ADDR_RESOLVED");
 		pthread_mutex_lock(&trans->lock);
 		trans->state = MSK_ADDR_RESOLVED;
-		ret = rdma_resolve_route(cma_id, trans->timeout);
-		if (ret) {
-			trans->state = MSK_ERROR;
-			ERROR_LOG("rdma_resolve_route failed");
-			pthread_cond_signal(&trans->cond);
-		}
+		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
 		break;
 
@@ -180,6 +175,28 @@ static int msk_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event
 		pthread_mutex_unlock(&trans->lock);
 		break;
 
+	case RDMA_CM_EVENT_CONNECT_REQUEST:
+		INFO_LOG("CONNECT_REQUEST");
+		//even if the cm_id is new, trans is the good parent's trans.
+		int i = 0;
+		pthread_mutex_lock(&trans->lock);
+
+		//FIXME don't run through this stupidely and remember last index written to and last index read, i.e. use as a queue
+		while (trans->conn_requests[i] && i < trans->server)
+			i++;
+
+		if (i == trans->server) {
+			ERROR_LOG("Could not pile up new connection requests' cm_id!");
+			ret = ENOBUFS;
+			break;
+		}
+
+		// write down new cm_id and signal accept handler there's stuff to do
+		trans->conn_requests[i] = cm_id;
+		pthread_cond_broadcast(&trans->cond);
+		pthread_mutex_unlock(&trans->lock);
+		break;
+
 	case RDMA_CM_EVENT_ADDR_ERROR:
 	case RDMA_CM_EVENT_ROUTE_ERROR:
 	case RDMA_CM_EVENT_CONNECT_ERROR:
@@ -190,25 +207,25 @@ static int msk_cma_event_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event
 		pthread_mutex_lock(&trans->lock);
 		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
-		ret = -1;
+		ret = ECONNREFUSED;
 		break;
 
 	case RDMA_CM_EVENT_DISCONNECTED:
 		ERROR_LOG("DISCONNECT EVENT...");
 
-		ret = -1;
+		ret = ECONNRESET;
 
-		trans->state = MSK_CLOSED;
-		if (trans->disconnect_callback)
-			trans->disconnect_callback(trans);
 		pthread_mutex_lock(&trans->lock);
+		trans->state = MSK_CLOSED;
 		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
+		if (trans->disconnect_callback)
+			trans->disconnect_callback(trans);
 		break;
 
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
 		ERROR_LOG("cma detected device removal!!!!");
-		ret = -1;
+		ret = ENODEV;
 		break;
 
 	default:
@@ -238,7 +255,7 @@ static void *msk_cm_thread(void *arg) {
 		}
 		ret = msk_cma_event_handler(event->id, event);
 		rdma_ack_cm_event(event);
-		if (ret) {
+		if (ret && trans->state != MSK_LISTENING) {
 			if (trans->state != MSK_CLOSED)
 				ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
 			break;
@@ -693,10 +710,21 @@ int msk_bind_server(msk_trans_t *trans) {
 	}
 
 
+	//FIXME: if (debug)?
 	char str[INET_ADDRSTRLEN];
 
 	inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
 	INFO_LOG("addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
+
+        trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
+        if (!trans->conn_requests) {
+                ERROR_LOG("Could not allocate conn_requests buffer");
+                return ENOMEM;
+        }
+
+        memset(trans->conn_requests, 0, trans->server * sizeof(struct rdma_cm_id*));
+
+
 
 	ret = rdma_bind_addr(trans->cm_id, &trans->addr.sa);
 	if (ret) {
@@ -713,6 +741,20 @@ int msk_bind_server(msk_trans_t *trans) {
 	}
 
 	trans->state = MSK_LISTENING;
+
+	pthread_attr_t attr_thr;
+
+	/* Init for thread parameter (mostly for scheduling) */
+	if(pthread_attr_init(&attr_thr) != 0)
+		ERROR_LOG("can't init pthread's attributes");
+	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
+		ERROR_LOG("can't set pthread's scope");
+	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+		ERROR_LOG("can't set pthread's join state");
+
+	//FIXME check pthread_create return value
+	pthread_create(&trans->cm_thread, &attr_thr, msk_cm_thread, trans);
+
 
 	return 0;
 }
@@ -780,6 +822,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
 
 	while (trans->state != MSK_CONNECTED) {
 		pthread_cond_wait(&trans->cond, &trans->lock);
+		INFO_LOG("Got a cond, state: %i", trans->state);
 	}
 
 	pthread_mutex_unlock(&trans->lock);
@@ -788,90 +831,40 @@ int msk_finalize_accept(msk_trans_t *trans) {
 }
 
 /**
- * msk_start_cm_thread: starts cm event thread for server side in case there's no accept_one idling
- *
- * @param trans [IN]
- *
- * @return same as pthread_create (0 on success)
- */
-int msk_start_cm_thread(msk_trans_t *trans) {
-	pthread_attr_t attr_thr;
-
-	/* Init for thread parameter (mostly for scheduling) */
-	if(pthread_attr_init(&attr_thr) != 0)
-		ERROR_LOG("can't init pthread's attributes");
-
-	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
-		ERROR_LOG("can't set pthread's scope");
-
-	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
-		ERROR_LOG("can't set pthread's join state");
-
-	return pthread_create(&trans->cm_thread, &attr_thr, msk_cm_thread, trans);
-}
-
-/**
  * msk_accept_one: given a listening trans, waits till one connection is requested and accepts it
  *
- * @param rdma_connection [IN] the mother trans
+ * @param trans [IN] the parent trans
  *
  * @return a new trans for the child on success, NULL on failure
  */
-msk_trans_t *msk_accept_one(msk_trans_t *rdma_connection) { //TODO make it return an int an' use trans as argument
+msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int an' use trans as argument
 
 	//TODO: timeout?
 
-	struct rdma_cm_event *event;
-	struct rdma_cm_id *cm_id;
-	msk_trans_t *trans = NULL;
-	int ret;
+	struct rdma_cm_id *cm_id = NULL;
+	msk_trans_t *child_trans = NULL;
+	int i;
 
-	while (!trans) {
-		ret = rdma_get_cm_event(rdma_connection->event_channel, &event);
-		if (ret) {
-			ret=errno;
-			ERROR_LOG("rdma_get_cm_event failed: %s (%d)", strerror(ret), ret);
-			return NULL;
+	pthread_mutex_lock(&trans->lock);
+	while (!cm_id) {
+		i = 0;
+		while (!trans->conn_requests[i] && i < trans->server)
+			i++;
+
+		if (i == trans->server) {
+			pthread_cond_wait(&trans->cond, &trans->lock);
+		} else {
+			cm_id = trans->conn_requests[i];
+			trans->conn_requests[i] = NULL;
 		}
-
-		cm_id = (struct rdma_cm_id *)event->id;
-
-		switch (event->event) {
-		case RDMA_CM_EVENT_CONNECT_REQUEST:
-			INFO_LOG("CONNECT_REQUEST");
-			trans = clone_trans(rdma_connection, cm_id);
-			break;
-
-		case RDMA_CM_EVENT_ESTABLISHED:
-			INFO_LOG("ESTABLISHED");
-			trans = cm_id->context;
-			pthread_mutex_lock(&trans->lock);
-			trans->state = MSK_CONNECTED;
-			pthread_cond_broadcast(&trans->cond);
-			pthread_mutex_unlock(&trans->lock);
-			trans = NULL;
-			break;
-
-		case RDMA_CM_EVENT_DISCONNECTED:
-			INFO_LOG("DISCONNECTED");
-			trans = cm_id->context;
-			pthread_mutex_lock(&trans->lock);
-			trans->state = MSK_CLOSED;
-			if (trans->disconnect_callback)
-				trans->disconnect_callback(trans);
-			pthread_cond_broadcast(&trans->cond);
-			pthread_mutex_unlock(&trans->lock);
-			trans = NULL;
-			break;
-
-		default:
-			INFO_LOG("unhandled event: %s", rdma_event_str(event->event));
-		}
-		rdma_ack_cm_event(event);
 	}
-	if (trans) {
-		msk_setup_qp(trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
-		msk_setup_buffer(trans);
+	pthread_mutex_unlock(&trans->lock);
+
+	child_trans = clone_trans(trans, cm_id);
+
+	if (child_trans) {
+		msk_setup_qp(child_trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
+		msk_setup_buffer(child_trans);
 		pthread_attr_t attr_thr;
 
 		/* Init for thread parameter (mostly for scheduling) */
@@ -884,9 +877,9 @@ msk_trans_t *msk_accept_one(msk_trans_t *rdma_connection) { //TODO make it retur
 		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 			ERROR_LOG("can't set pthread's join state");
 
-		pthread_create(&trans->cq_thread, &attr_thr, msk_cq_thread, trans);
+		pthread_create(&child_trans->cq_thread, &attr_thr, msk_cq_thread, child_trans);
 	}
-	return trans;
+	return child_trans;
 }
 
 /**
@@ -906,7 +899,24 @@ static int msk_bind_client(msk_trans_t *trans) {
 		return ret;
 	}
 
-	pthread_cond_wait(&trans->cond, &trans->lock);
+
+	while (trans->state != MSK_ADDR_RESOLVED) {
+	       	pthread_cond_wait(&trans->cond, &trans->lock);
+		INFO_LOG("Got a cond, state: %i", trans->state);
+	}
+
+	ret = rdma_resolve_route(trans->cm_id, trans->timeout);
+	if (ret) {
+		trans->state = MSK_ERROR;
+		ERROR_LOG("rdma_resolve_route failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	while (trans->state != MSK_ROUTE_RESOLVED) {
+	       	pthread_cond_wait(&trans->cond, &trans->lock);
+		INFO_LOG("Got a cond, state: %i", trans->state);
+	}
+
 	pthread_mutex_unlock(&trans->lock);
 
 	return 0;
@@ -938,13 +948,12 @@ int msk_finalize_connect(msk_trans_t *trans) {
 		return ret;
 	}
 
-	pthread_cond_wait(&trans->cond, &trans->lock);
-	pthread_mutex_unlock(&trans->lock);
-
-	if (trans->state != MSK_CONNECTED) {
-		ERROR_LOG("trans not in CONNECTED state as expected");
-		return ENOTCONN;
+	while (trans->state != MSK_CONNECTED) {
+		pthread_cond_wait(&trans->cond, &trans->lock);
+		INFO_LOG("Got a cond, state: %i", trans->state);
 	}
+
+	pthread_mutex_unlock(&trans->lock);
 
 	return 0;
 }

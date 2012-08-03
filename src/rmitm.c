@@ -272,8 +272,6 @@ int main(int argc, char **argv) {
 	TEST_Z(msk_bind_server(s_trans));
 	child_trans = msk_accept_one(s_trans);
 	
-	TEST_Z(msk_start_cm_thread(s_trans));
-	
 	// got a client, start our own client before we finalize the server's connection
 
 	c_attr.pd = child_trans->pd;
