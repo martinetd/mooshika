@@ -186,6 +186,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 			i++;
 
 		if (i == trans->server) {
+			pthread_mutex_unlock(&trans->lock);
 			ERROR_LOG("Could not pile up new connection requests' cm_id!");
 			ret = ENOBUFS;
 			break;
@@ -195,6 +196,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		trans->conn_requests[i] = cm_id;
 		pthread_cond_broadcast(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
+
 		break;
 
 	case RDMA_CM_EVENT_ADDR_ERROR:
