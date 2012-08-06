@@ -1,3 +1,0 @@
-dd if=/dev/urandom bs=10M count=10 | tee >(md5sum - 1>&2) | ./rcat -c 10.0.2.22
-
-./rcat -s | md5sum -
