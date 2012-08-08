@@ -44,9 +44,6 @@
 #include <sys/stat.h>	//open
 #include <fcntl.h>	//open
 
-#include <infiniband/arch.h>
-#include <rdma/rdma_cma.h>
-
 #include "log.h"
 #include "mooshika.h"
 

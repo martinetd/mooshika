@@ -32,6 +32,9 @@
 #ifndef _MOOSHIKA_H
 #define _MOOSHIKA_H
 
+#include <infiniband/arch.h>
+#include <rdma/rdma_cma.h>
+
 typedef struct msk_trans msk_trans_t;
 typedef struct msk_trans_attr msk_trans_attr_t;
 
