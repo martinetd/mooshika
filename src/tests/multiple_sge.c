@@ -191,6 +191,10 @@ int main(int argc, char **argv) {
 		rdata[i].data=mrbuf+i*CHUNK_SIZE;
 		rdata[i].size = 0;
 		rdata[i].max_size=CHUNK_SIZE;
+                if ((i-1) % NUM_SGE != 0)
+                        rdata[i].next = &rdata[i+1];
+                else
+                        rdata[i].next = NULL;
 	}
 	datalock.mr = mr;
 	datalock.lock = &lock;

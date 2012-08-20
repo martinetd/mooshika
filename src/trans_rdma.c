@@ -514,7 +514,7 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 		if (trans->cm_thread)
 			pthread_join(trans->cm_thread, NULL);
 		if (trans->cq_thread)
-			pthread_join(trans->cq_thread, NULL); //FIXME: cf. msk_cq_thread's fixme, it's possible this never ends
+			pthread_join(trans->cq_thread, NULL);
 
 		// these two functions do the proper if checks
 		msk_destroy_buffer(trans);
@@ -800,6 +800,9 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 
 	trans->cm_id = cm_id;
 	trans->cm_id->context = trans;
+
+	// we don't want to close cm thread when destroying the child
+	trans->cm_thread = 0;
 
 	memset(&trans->lock, 0, sizeof(pthread_mutex_t));
 	memset(&trans->cond, 0, sizeof(pthread_cond_t));
