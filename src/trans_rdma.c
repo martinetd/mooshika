@@ -131,6 +131,40 @@ void msk_print_devinfo(msk_trans_t *trans) {
 		(unsigned) (node_guid >>  0) & 0xffff);
 }
 
+/**
+ * msk_create_thread: Simple wrapper around pthread_create
+ */
+#define THREAD_STACK_SIZE 2116488
+static inline int msk_create_thread(pthread_t *thread,
+              void *(*start_routine)(void*), void *arg) {
+
+	pthread_attr_t attr;
+	int ret;
+
+	/* Init for thread parameter (mostly for scheduling) */
+	if ((ret = pthread_attr_init(&attr)) != 0) {
+		ERROR_LOG("can't init pthread's attributes: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	if ((ret = pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)) != 0) {
+		ERROR_LOG("can't set pthread's scope: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	if ((ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE)) != 0) {
+		ERROR_LOG("can't set pthread's join state: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	if ((ret = pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE)) != 0) {
+		ERROR_LOG("can't set pthread's stack size: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	return pthread_create(thread, &attr, start_routine, arg);
+}
+
 /* INIT/SHUTDOWN FUNCTIONS */
 
 /**
@@ -744,19 +778,10 @@ int msk_bind_server(msk_trans_t *trans) {
 
 	trans->state = MSK_LISTENING;
 
-	pthread_attr_t attr_thr;
-
-	/* Init for thread parameter (mostly for scheduling) */
-	if(pthread_attr_init(&attr_thr) != 0)
-		ERROR_LOG("can't init pthread's attributes");
-	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
-		ERROR_LOG("can't set pthread's scope");
-	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
-		ERROR_LOG("can't set pthread's join state");
-
-	//FIXME check pthread_create return value
-	pthread_create(&trans->cm_thread, &attr_thr, msk_cm_thread, trans);
-
+	if ((ret = msk_create_thread(&trans->cm_thread, msk_cm_thread, trans))) {
+		ERROR_LOG("msk_create_thread failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -865,21 +890,19 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 	child_trans = clone_trans(trans, cm_id);
 
 	if (child_trans) {
-		msk_setup_qp(child_trans); //FIXME: check return codes //FIXME: decide what to do with half-init connection requests that failed...
-		msk_setup_buffer(child_trans);
-		pthread_attr_t attr_thr;
+		if (msk_setup_qp(child_trans)) {
+			msk_destroy_trans(&child_trans);
+			return NULL;
+		}
+		if (msk_setup_buffer(child_trans)) {
+			msk_destroy_trans(&child_trans);
+			return NULL;
+		}
 
-		/* Init for thread parameter (mostly for scheduling) */
-		if(pthread_attr_init(&attr_thr) != 0)
-			ERROR_LOG("can't init pthread's attributes");
-
-		if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
-			ERROR_LOG("can't set pthread's scope");
-
-		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
-			ERROR_LOG("can't set pthread's join state");
-
-		pthread_create(&child_trans->cq_thread, &attr_thr, msk_cq_thread, child_trans);
+		if (msk_create_thread(&child_trans->cq_thread, msk_cq_thread, child_trans)) {
+			msk_destroy_trans(&child_trans);
+			return NULL;
+		}
 	}
 	return child_trans;
 }
@@ -968,6 +991,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
  * @return 0 on success, the value of errno on error 
  */
 int msk_connect(msk_trans_t *trans) {
+	int ret;
 
 	if (!trans) {
 		ERROR_LOG("trans must be initialized first!");
@@ -979,25 +1003,18 @@ int msk_connect(msk_trans_t *trans) {
 		return EINVAL;
 	}
 
-	pthread_attr_t attr_thr;
+	if ((ret = msk_create_thread(&trans->cm_thread, msk_cm_thread, trans)))
+		return ret;
 
-	/* Init for thread parameter (mostly for scheduling) */
-	if(pthread_attr_init(&attr_thr) != 0)
-		ERROR_LOG("can't init pthread's attributes");
+	if ((ret = msk_bind_client(trans)))
+		return ret;
+	if ((ret = msk_setup_qp(trans)))
+		return ret;
+	if ((ret = msk_setup_buffer(trans)))
+		return ret;
 
-	if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
-		ERROR_LOG("can't set pthread's scope");
-
-	if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
-		ERROR_LOG("can't set pthread's join state");
-
-	pthread_create(&trans->cm_thread, &attr_thr, msk_cm_thread, trans);
-
-	msk_bind_client(trans);
-	msk_setup_qp(trans);
-	msk_setup_buffer(trans);
-
-	pthread_create(&trans->cq_thread, &attr_thr, msk_cq_thread, trans);
+	if ((ret = msk_create_thread(&trans->cq_thread, msk_cq_thread, trans)))
+		return ret;
 
 	return 0;
 }
