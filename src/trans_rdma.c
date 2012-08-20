@@ -553,6 +553,11 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 
 	msk_trans_t *trans;
 
+	if (!ptrans || *ptrans || !attr) {
+		ERROR_LOG("Invalid argument");
+		return EINVAL;
+	}
+
 	*ptrans = malloc(sizeof(msk_trans_t));
 	if (!*ptrans) {
 		ERROR_LOG("Out of memory");
