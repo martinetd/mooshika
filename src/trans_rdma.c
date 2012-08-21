@@ -553,7 +553,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 
 	msk_trans_t *trans;
 
-	if (!ptrans || *ptrans || !attr) {
+	if (!ptrans || !attr) {
 		ERROR_LOG("Invalid argument");
 		return EINVAL;
 	}
