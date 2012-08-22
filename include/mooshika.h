@@ -72,8 +72,6 @@ struct msk_trans {
 		MSK_ROUTE_RESOLVED,
 		MSK_CONNECT_REQUEST,
 		MSK_CONNECTED,
-		MSK_FLUSHING,
-		MSK_CLOSING,
 		MSK_CLOSED,
 		MSK_ERROR
 	} state;			/**< tracks the transport state machine for connection setup and tear down */

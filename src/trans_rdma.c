@@ -739,8 +739,7 @@ static int msk_setup_buffer(msk_trans_t *trans) {
 int msk_bind_server(msk_trans_t *trans) {
 	int ret;
 
-
-	if (!trans) {
+	if (!trans || trans->state != MSK_INIT) {
 		ERROR_LOG("trans must be initialized first!");
 		return EINVAL;
 	}
@@ -805,6 +804,7 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 
 	trans->cm_id = cm_id;
 	trans->cm_id->context = trans;
+	trans->state = MSK_CONNECT_REQUEST;
 
 	// we don't want to close cm thread when destroying the child
 	trans->cm_thread = 0;
@@ -838,6 +838,11 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 int msk_finalize_accept(msk_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
+
+	if (!trans || trans->state != MSK_CONNECT_REQUEST) {
+		ERROR_LOG("trans isn't from a connection request?");
+		return EINVAL;
+	}
 
 	memset(&conn_param, 0, sizeof(struct rdma_conn_param));
 	conn_param.responder_resources = 1;
@@ -879,6 +884,11 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 	struct rdma_cm_id *cm_id = NULL;
 	msk_trans_t *child_trans = NULL;
 	int i;
+
+	if (!trans || trans->state != MSK_LISTENING) {
+		ERROR_LOG("trans isn't listening (after bind_server)?");
+		return NULL;
+	}
 
 	pthread_mutex_lock(&trans->lock);
 	while (!cm_id) {
@@ -966,6 +976,12 @@ int msk_finalize_connect(msk_trans_t *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
+	if (!trans || trans->state != MSK_ROUTE_RESOLVED) {
+		ERROR_LOG("trans isn't half-connected?");
+		return EINVAL;
+	}
+
+
 	memset(&conn_param, 0, sizeof(struct rdma_conn_param));
 	conn_param.responder_resources = 1;
 	conn_param.initiator_depth = 1;
@@ -1001,7 +1017,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
 int msk_connect(msk_trans_t *trans) {
 	int ret;
 
-	if (!trans) {
+	if (!trans || trans->state != MSK_INIT) {
 		ERROR_LOG("trans must be initialized first!");
 		return EINVAL;
 	}
@@ -1046,6 +1062,12 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	INFO_LOG("posting recv");
 	msk_ctx_t *rctx;
 	int i, ret;
+
+	if (!trans || (trans->state != MSK_CONNECTED && trans->state != MSK_ROUTE_RESOLVED && trans->state != MSK_CONNECT_REQUEST)) {
+       		ERROR_LOG("trans isn't connected?");
+		return EINVAL;
+	}
+
 
 	pthread_mutex_lock(&trans->lock);
 
@@ -1104,6 +1126,11 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 	msk_ctx_t *wctx;
 	int i, ret;
 	uint32_t totalsize = 0;
+
+	if (!trans || trans->state != MSK_CONNECTED) {
+       		ERROR_LOG("trans isn't connected?");
+		return EINVAL;
+	}
 
 	// opcode-specific checks:
 	if (opcode == IBV_WR_RDMA_WRITE || opcode == IBV_WR_RDMA_READ) {
