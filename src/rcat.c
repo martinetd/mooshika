@@ -104,6 +104,7 @@ void print_help(char **argv) {
 
 void* handle_trans(void *arg) {
 	msk_trans_t *trans = arg;
+	int mt_server = *(int*)trans->private_data;
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 	msk_data_t *wdata;
@@ -201,7 +202,10 @@ void* handle_trans(void *arg) {
 	free(ackdata);
 	free(rdmabuf);
 
-	pthread_exit(NULL);
+	if (mt_server)
+		pthread_exit(NULL);
+	else
+		return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -287,6 +291,8 @@ int main(int argc, char **argv) {
 		exit(-1);
 
 
+	trans->private_data = &mt_server;
+
 	if (trans->server) {
 		pthread_t id;
 		pthread_attr_t attr_thr;
@@ -302,7 +308,6 @@ int main(int argc, char **argv) {
 
 		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 			ERROR_LOG("can't set pthread's join state");
-
 
 		if (mt_server) {
 			while (1) {

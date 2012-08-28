@@ -282,7 +282,38 @@ static void *msk_cm_thread(void *arg) {
 	struct rdma_cm_event *event;
 	int ret;
 
-	while (1) {
+	//make get_cq_event_nonblocking for poll
+	int flags;
+	flags = fcntl(trans->event_channel->fd, F_GETFL);
+	ret = fcntl(trans->event_channel->fd, F_SETFL, flags | O_NONBLOCK);
+	if (ret < 0) {
+		ERROR_LOG("Failed to make the comp channel nonblock");
+		pthread_exit(NULL);
+	}
+
+	struct pollfd event_pollfd;
+	event_pollfd.fd = trans->event_channel->fd;
+	event_pollfd.events = POLLIN;
+	event_pollfd.revents = 0;
+
+	while (trans->state != MSK_CLOSED) {
+		ret = poll(&event_pollfd, 1, 100);
+
+		if (ret == 0)
+			continue;
+
+		if (ret == -1) {
+			if (trans->state != MSK_CLOSED)
+				ERROR_LOG("poll failed");
+			break;
+		}
+
+		if (!trans->event_channel) {
+			if (trans->state != MSK_CLOSED)
+				ERROR_LOG("no event channel? :D");
+			break;
+		}
+
 		ret = rdma_get_cm_event(trans->event_channel, &event);
 		if (ret) {
 			ret = errno;
@@ -291,7 +322,7 @@ static void *msk_cm_thread(void *arg) {
 		}
 		ret = msk_cma_event_handler(event->id, event);
 		rdma_ack_cm_event(event);
-		if (ret && trans->state != MSK_LISTENING) {
+		if (ret && (trans->state != MSK_LISTENING || trans == event->id->context)) {
 			if (trans->state != MSK_CLOSED)
 				ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
 			break;
@@ -501,15 +532,29 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 	msk_trans_t *trans = *ptrans;
 
 	if (trans) {
-		pthread_mutex_lock(&trans->lock);
-		if (trans->cm_id)
-			rdma_disconnect(trans->cm_id);
+		if (trans->state != MSK_LISTENING) {
+			pthread_mutex_lock(&trans->lock);
+			if (trans->cm_id && trans->cm_id->verbs)
+				rdma_disconnect(trans->cm_id);
 
-		while (trans->state != MSK_CLOSED) {
-			ERROR_LOG("we're not closed yet, waiting for disconnect_event");
-			pthread_cond_wait(&trans->cond, &trans->lock);
+			while (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING) {
+				ERROR_LOG("we're not closed yet, waiting for disconnect_event");
+				pthread_cond_wait(&trans->cond, &trans->lock);
+			}
+			pthread_mutex_unlock(&trans->lock);
 		}
-		pthread_mutex_unlock(&trans->lock);
+
+		if (trans->cm_id) {
+			rdma_destroy_id(trans->cm_id);
+			trans->cm_id = NULL;
+		}
+
+		// event channel is shared between all children, so don't close it unless it's its own.
+		if (((!trans->server) || (trans->state == MSK_LISTENING)) && trans->event_channel) {
+			trans->state = MSK_CLOSED;
+			rdma_destroy_event_channel(trans->event_channel);
+			trans->event_channel = NULL;
+		}
 
 		if (trans->cm_thread)
 			pthread_join(trans->cm_thread, NULL);
@@ -519,16 +564,6 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 		// these two functions do the proper if checks
 		msk_destroy_buffer(trans);
 		msk_destroy_qp(trans);
-
-		if (trans->cm_id) {
-			rdma_destroy_id(trans->cm_id);
-			trans->cm_id = NULL;
-		}
-		// event channel is shared between all children, so don't close it unless it's its own.
-		if (((!trans->server) || (trans->state == MSK_LISTENING)) && trans->event_channel) {
-			rdma_destroy_event_channel(trans->event_channel);
-			trans->event_channel = NULL;
-		}
 
 		//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
 		pthread_mutex_unlock(&trans->lock);

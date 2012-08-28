@@ -65,7 +65,7 @@ typedef void (*disconnect_callback_t) (msk_trans_t *trans);
  * RDMA transport instance
  */
 struct msk_trans {
-	enum { // FIXME: make volatile?
+	enum msk_state {
 		MSK_INIT,
 		MSK_LISTENING,
 		MSK_ADDR_RESOLVED,
