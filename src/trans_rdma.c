@@ -932,6 +932,7 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 			i++;
 
 		if (i == trans->server) {
+			INFO_LOG("Waiting for a connection to come in");
 			pthread_cond_wait(&trans->cond, &trans->lock);
 		} else {
 			cm_id = trans->conn_requests[i];
@@ -939,6 +940,8 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 		}
 	}
 	pthread_mutex_unlock(&trans->lock);
+
+	INFO_LOG("Got a connection request - creating child");
 
 	child_trans = clone_trans(trans, cm_id);
 
