@@ -1123,10 +1123,10 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 
 	} while ( i == trans->rq_depth );
 	INFO_LOG("got a free context");
+	rctx->used = 1;
 
 	pthread_mutex_unlock(&trans->lock);
 
-	rctx->used = 1;
 	rctx->pos = 0;
 	rctx->next = NULL;
 	rctx->callback = callback;
@@ -1199,10 +1199,10 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 
 	} while ( i == trans->sq_depth );
 	INFO_LOG("got a free context");
+	wctx->used = 1;
 
 	pthread_mutex_unlock(&trans->lock);
 
-	wctx->used = 1;
 	wctx->pos = 0;
 	wctx->next = NULL;
 	wctx->callback = callback;
