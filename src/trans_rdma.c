@@ -216,8 +216,10 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		pthread_mutex_lock(&trans->lock);
 
 		//FIXME don't run through this stupidely and remember last index written to and last index read, i.e. use as a queue
-		while (trans->conn_requests[i] && i < trans->server)
-			i++;
+		/* Find an empty connection request slot */
+		for (i = 0; i < trans->server; i++)
+			if (!trans->conn_requests[i])
+				break;
 
 		if (i == trans->server) {
 			pthread_mutex_unlock(&trans->lock);
@@ -927,9 +929,10 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 
 	pthread_mutex_lock(&trans->lock);
 	while (!cm_id) {
-		i = 0;
-		while (!trans->conn_requests[i] && i < trans->server)
-			i++;
+		/* See if one of the slots has been taken */
+		for (i = 0; i < trans->server; i++)
+			if (trans->conn_requests[i])
+				break;
 
 		if (i == trans->server) {
 			INFO_LOG("Waiting for a connection to come in");
