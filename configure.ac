@@ -18,7 +18,7 @@ AC_CHECK_HEADERS([infiniband/verbs.h],[], [AC_MSG_ERROR(missing infiniband heade
 AC_SEARCH_LIBS([rdma_create_id], [rdmacm], [], [
 	AC_MSG_ERROR([unable to find librdmacm])
 ])
-AC_CHECK_HEADERS([rdma/rdma_verbs.h],[], [AC_MSG_ERROR(missing rdma headers)])
+AC_CHECK_HEADERS([rdma/rdma_cma.h],[], [AC_MSG_ERROR(missing rdma headers)])
 
 AC_DEFINE( [VERSION_COMMENT], ["libmooshika and examples"], [No Comment])
 
