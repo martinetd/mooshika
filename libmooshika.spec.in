@@ -1,7 +1,7 @@
 Summary: The mooshika library (libmooshika)
 Name: libmooshika
 Version: 0.1
-Release: 1
+Release: 1.git@_GIT_HEAD_COMMIT_ABBREV@
 Group: Application/Devel
 Packager: Dominique Martinet <dominique.martinet.ocre@cea.fr>
 License: CeCILL

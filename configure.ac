@@ -30,6 +30,7 @@ if test "x$head_commit" == "x" ; then
   AC_DEFINE_UNQUOTED( [_GIT_HEAD_COMMIT], "not compiled within a git repository", [Lastest HEAD at the time configure was run])
   AC_MSG_CHECKING( [Git describe] )
   AC_DEFINE_UNQUOTED( [_GIT_DESCRIBE], "not compiled within a git repository", [Result of git-describe --long])
+  AC_SUBST(_GIT_HEAD_COMMIT_ABBREV)
 else
   AC_MSG_RESULT( $head_commit ) 
   AC_DEFINE_UNQUOTED( [_GIT_HEAD_COMMIT], "$head_commit", [Lastest HEAD at the time configure was run])
@@ -37,6 +38,7 @@ else
   git_describe=`git describe --long`
   AC_MSG_RESULT( $git_describe ) 
   AC_DEFINE_UNQUOTED( [_GIT_DESCRIBE], "$git_describe", [Result of git-describe --long])
+  AC_SUBST(_GIT_HEAD_COMMIT_ABBREV, .${head_commit:0:7})
 fi
 
 
