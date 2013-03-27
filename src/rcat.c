@@ -74,6 +74,8 @@ void callback_disconnect(msk_trans_t *trans) {
 
 void callback_recv(msk_trans_t *trans, void *arg) {
 	struct datamr *datamr = arg;
+	int n;
+
 	if (!datamr) {
 		ERROR_LOG("no callback_arg?");
 		return;
@@ -83,8 +85,11 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 
 	if (pdata->size != 1 || pdata->data[0] != '\0') {
 	// either we get real data and write it to stdout
-		write(1, (char *)pdata->data, pdata->size);
+		n = write(1, (char *)pdata->data, pdata->size);
 		fflush(stdout);
+
+		if (n != pdata->size)
+			ERROR_LOG("Wrote less than what was actually received");
 
 		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
 		msk_post_send(trans, datamr->ackdata, datamr->mr, NULL, NULL);

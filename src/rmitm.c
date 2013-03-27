@@ -103,8 +103,10 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 
 	msk_data_t *data = datalock->data;
 
-	fwrite(data->data, data->size, sizeof(char), priv->logfd);
-	fwrite("\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11", 0x10, sizeof(char), priv->logfd);
+	if (fwrite(data->data, data->size, sizeof(char), priv->logfd) != data->size ||
+		fwrite("\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11\x11", 0x10, sizeof(char), priv->logfd) != 0x10)
+			ERROR_LOG("Could not write to log file");
+
 	fflush(priv->logfd);
 
 	msk_post_send(priv->o_trans, data, priv->mr, callback_send, datalock);
@@ -159,7 +161,8 @@ void* handle_trans(void *arg) {
 		if (i == 0)
 			continue;
 
-		read(0, dumpstr, 10);
+		if (read(0, dumpstr, 10) < 0)
+			break;
 	}	
 
 
