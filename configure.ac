@@ -50,5 +50,5 @@ AM_CONDITIONAL(USE_SHM, test "x$enable_shm" = "xyes")
 AC_SUBST(ac_configure_args)
 
 AC_CONFIG_HEADERS([include/config.h])
-AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile rpm/Makefile src/libmooshika.pc libmooshika.spec])
+AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile src/libmooshika.pc libmooshika.spec])
 AC_OUTPUT

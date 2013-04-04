@@ -1,15 +1,14 @@
 ACLOCAL_AMFLAGS = -I m4
 
-SUBDIRS = src \
-          rpm
+SUBDIRS = src
 
 include_HEADERS = include/mooshika.h
 
 rpm: dist libmooshika.spec
-	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -tb $(distdir).tar.gz
+	rpmbuild $(RPM_DB_ARGS) $(extra_arg) -tb $(distdir).tar.gz
 
 srpm: dist libmooshika.spec
-	rpmbuild $(RPM_DB_ARGS) $(extra_arg) --define "_topdir `pwd`/rpm" -ts $(distdir).tar.gz
+	rpmbuild $(RPM_DB_ARGS) $(extra_arg) -ts $(distdir).tar.gz
 
 rpms: rpm srpm
 
