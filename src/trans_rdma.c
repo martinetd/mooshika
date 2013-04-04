@@ -534,7 +534,8 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 	msk_trans_t *trans = *ptrans;
 
 	if (trans) {
-		if (trans->state != MSK_LISTENING) {
+		/* FIXME: what to do on error? */
+		if (trans->state == MSK_CONNECTED || trans->state == MSK_CLOSED) {
 			pthread_mutex_lock(&trans->lock);
 			if (trans->cm_id && trans->cm_id->verbs)
 				rdma_disconnect(trans->cm_id);
