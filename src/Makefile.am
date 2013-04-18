@@ -18,7 +18,7 @@ rcat_LDADD += libmooshika.la
 endif
 
 rmitm_SOURCES = rmitm.c
-rmitm_LDADD = -lrdmacm -libverbs -lpthread
+rmitm_LDADD = -lrdmacm -libverbs -lpthread -lpcap
 if USE_SHM
 rmitm_LDADD += libmooshika_shm.la
 else
