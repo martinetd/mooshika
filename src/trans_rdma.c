@@ -469,8 +469,13 @@ static void *msk_cq_thread(void *arg) {
 		ret = msk_cq_event_handler(trans);
 		ibv_ack_cq_events(trans->cq, 1);
 		if (ret) {
-			if (trans->state != MSK_CLOSED)
+			if (trans->state != MSK_CLOSED) {
 				ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
+				pthread_mutex_lock(&trans->lock);
+				trans->state = MSK_ERROR;
+				pthread_cond_signal(&trans->cond);
+				pthread_mutex_unlock(&trans->lock);
+			}
 			break;
 		}
 	}
@@ -540,7 +545,7 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 			if (trans->cm_id && trans->cm_id->verbs)
 				rdma_disconnect(trans->cm_id);
 
-			while (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING) {
+			while (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR) {
 				ERROR_LOG("we're not closed yet, waiting for disconnect_event");
 				pthread_cond_wait(&trans->cond, &trans->lock);
 			}
