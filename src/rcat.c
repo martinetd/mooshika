@@ -37,6 +37,7 @@
 #include <stdlib.h>	//malloc
 #include <string.h>	//memcpy
 #include <unistd.h>	//read
+#include <netdb.h>      //gethostbyname
 #include <getopt.h>
 #include <errno.h>
 #include <poll.h>
@@ -222,6 +223,8 @@ int main(int argc, char **argv) {
 
 	int mt_server = 0;
 
+	struct hostent *host;
+
 	// argument handling
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
@@ -261,7 +264,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'c':
 				attr.server = 0;
-				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
+				host = gethostbyname(optarg);
+				//FIXME: if (host->h_addrtype == AF_INET6) {
+				memcpy(&attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
 			case 's':
 				attr.server = 10;
@@ -269,7 +274,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'S':
 				attr.server = 10;
-				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
+				host = gethostbyname(optarg);
+				//FIXME: if (host->h_addrtype == AF_INET6) {
+				memcpy(&attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
 			case 'p':
 				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));

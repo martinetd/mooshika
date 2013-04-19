@@ -37,6 +37,7 @@
 #include <stdlib.h>	//malloc
 #include <string.h>	//memcpy
 #include <unistd.h>	//read
+#include <netdb.h>      //gethostbyname
 #include <getopt.h>
 #include <errno.h>
 #include <poll.h>
@@ -192,6 +193,7 @@ void* handle_trans(void *arg) {
 
 int main(int argc, char **argv) {
 
+	struct hostent *host;
 
 	msk_trans_t *s_trans;
 	msk_trans_t *child_trans;
@@ -256,7 +258,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'c':
 				c_attr.server = 0;
-				inet_pton(AF_INET, optarg, &c_attr.addr.sa_in.sin_addr);
+				host = gethostbyname(optarg);
+				//FIXME: if (host->h_addrtype == AF_INET6) {
+				memcpy(&c_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
 			case 's':
 				s_attr.server = 10;
@@ -265,7 +269,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'S':
 				s_attr.server = 10;
-				inet_pton(AF_INET, optarg, &s_attr.addr.sa_in.sin_addr);
+				host = gethostbyname(optarg);
+				//FIXME: if (host->h_addrtype == AF_INET6) {
+				memcpy(&s_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
