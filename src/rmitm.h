@@ -49,7 +49,7 @@ typedef struct tcp_hdr {
 	u_int8_t th_data_off;
 	u_int8_t th_flags;
 	u_int16_t th_window;
-	u_int16_t th_chksum;
+	u_int16_t th_sum;
 	u_int16_t th_urgptr;
 } tcp_hdr_t;
 
@@ -71,7 +71,6 @@ struct pkt_hdr {
 
 #define PACKET_HDR_LEN sizeof(struct pkt_hdr)
 
-#if 0
 #define	CHECKSUM_CARRY(x) \
     (~((x & 0xffff) + (x >> 16)) & 0xffff)
 
@@ -98,18 +97,18 @@ static uint16_t checksum(u_int16_t *data, int len) {
 	return sum;
 }
 
-static void ipv6_udp_checksum(struct pkt_hdr *hdr) {
+#define tcp_len(hdr) (ntohs(hdr->ipv6.ip_len) - sizeof(struct ipv6_hdr))
+
+static void ipv6_tcp_checksum(struct pkt_hdr *hdr) {
 	uint32_t sum;
-	hdr->udp.uh_sum = 0;
+	hdr->tcp.th_sum = 0;
 
 	sum  = checksum((uint16_t*)&hdr->ipv6.ip_src, 2*sizeof(struct in6_addr));
-	sum += htons(IPPROTO_UDP) + hdr->udp.uh_ulen;
-	sum += checksum((uint16_t*)&hdr->udp, ntohs(hdr->udp.uh_ulen));
-	hdr->udp.uh_sum = CHECKSUM_CARRY(sum);
-
-//	hdr->udp.uh_sum = checksum((uint16_t*)hdr, ntohs(hdr->ipv6.ip_len))
+	sum += htons(IPPROTO_TCP + tcp_len(hdr));
+	sum += checksum((uint16_t*)&hdr->tcp, tcp_len(hdr));
+	hdr->tcp.th_sum = CHECKSUM_CARRY(sum);
 }
-#endif
+
 static inline int min(int a, int b) {
 	return (a < b) ? a: b;
 }
