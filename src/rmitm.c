@@ -125,11 +125,15 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 
 	packet->ipv6.ip_len = htons(pcaphdr.len);
 	packet->tcp.th_seq_nr = priv->seq_nr;
+
+	/* Need the lock both for writing in pcap_dumper AND for ack_nr,
+	 * otherwise some seq numbers are not ordered properly.
+	 */
+	pthread_mutex_lock(priv->plock);
 	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pcaphdr.len - sizeof(struct pkt_hdr));
 	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 	ipv6_tcp_checksum(packet);
 
-	pthread_mutex_lock(priv->plock);
 	pcap_dump((u_char*)priv->pcap_dumper, &pcaphdr, (u_char*)packet);
 	pthread_mutex_unlock(priv->plock);
 	pthread_mutex_unlock(&datalock->lock);
