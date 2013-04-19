@@ -62,6 +62,7 @@
 
 struct privatedata {
 	pcap_dumper_t *pcap_dumper;
+	uint32_t seq_nr;
 	msk_trans_t *o_trans;
 	struct ibv_mr *mr;
 	msk_data_t *first_rdata;
@@ -106,23 +107,22 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 		return;
 	}
 
+	msk_post_send(priv->o_trans, data, priv->mr, callback_send, data);
+
 	gettimeofday(&pcaphdr.ts, NULL);
 	pcaphdr.len = min(data->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
 	pcaphdr.caplen = min(pcaphdr.len, PACKET_TRUNC_LEN);
 
-	printf("Real len: %ld, used lens: %d, %d\n", data->size + PACKET_HDR_LEN, pcaphdr.len, pcaphdr.caplen);
-
 	packet = (struct pkt_hdr*)(data->data - PACKET_HDR_LEN);
 
-	packet->ipv6.ip_len = htons(pcaphdr.caplen);
-	packet->udp.uh_ulen = htons(pcaphdr.caplen - sizeof(struct ipv6_hdr));
-	ipv6_udp_checksum(packet);
+	packet->ipv6.ip_len = htons(pcaphdr.len);
+	packet->tcp.th_seq_nr = priv->seq_nr;
+	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pcaphdr.len - sizeof(struct pkt_hdr));
+	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 
 	pthread_mutex_lock(priv->lock);
 	pcap_dump((u_char*)priv->pcap_dumper, &pcaphdr, (u_char*)packet);
 	pthread_mutex_unlock(priv->lock);
-
-	msk_post_send(priv->o_trans, data, priv->mr, callback_send, data);
 }
 
 void print_help(char **argv) {
@@ -312,7 +312,7 @@ int main(int argc, char **argv) {
 	memset(&pkt_hdr, 0, sizeof(pkt_hdr));
 
 	pkt_hdr.ipv6.ip_flags[0] = 0x60; /* 6 in the leftmosts 4 bits */
-	pkt_hdr.ipv6.ip_nh = IPPROTO_UDP;
+	pkt_hdr.ipv6.ip_nh = IPPROTO_TCP;
 	pkt_hdr.ipv6.ip_hl = 1;
 	/** @todo: add options, use one of :
 			CLIENT
@@ -326,19 +326,23 @@ int main(int argc, char **argv) {
 	pkt_hdr.ipv6.ip_src.s6_addr16[4] = 0xffff;
 	pkt_hdr.ipv6.ip_src.s6_addr16[5] = 0x0000;
 	pkt_hdr.ipv6.ip_src.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-	pkt_hdr.udp.uh_sport = c_trans->cm_id->route.addr.dst_sin.sin_port;
+	pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.src_sin.sin_port;
 
 	pkt_hdr.ipv6.ip_dst.s6_addr16[4] = 0xffff;
 	pkt_hdr.ipv6.ip_dst.s6_addr16[5] = 0x0000;
 	pkt_hdr.ipv6.ip_dst.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-	pkt_hdr.udp.uh_dport = child_trans->cm_id->route.addr.dst_sin.sin_port;
+	pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.dst_sin.sin_port;
+
+	pkt_hdr.tcp.th_data_off = INT8_C(sizeof(struct tcp_hdr) * 4); /* *4 because words of 2 bits? it's odd. */
+	pkt_hdr.tcp.th_window = htons(100);
+	pkt_hdr.tcp.th_flags = THF_ACK;
 
 	for (i=0; i < 2*RECV_NUM; i++) {
 		if (i == RECV_NUM) { // change packet direction
 			pkt_hdr.ipv6.ip_src.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-			pkt_hdr.udp.uh_sport = child_trans->cm_id->route.addr.dst_sin.sin_port;
+			pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.dst_sin.sin_port;
 			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-			pkt_hdr.udp.uh_dport = c_trans->cm_id->route.addr.dst_sin.sin_port;
+			pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.src_sin.sin_port;
 		}
 		for (j=0; j<NUM_SGE; j++) {
 			memcpy(rdmabuf+(NUM_SGE*i+j)*(CHUNK_SIZE+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
@@ -358,6 +362,9 @@ int main(int argc, char **argv) {
 	pcap_t *pcap = pcap_open_dead(DLT_RAW, PACKET_HARD_MAX_LEN);
 	s_priv->pcap_dumper = pcap_dump_open(pcap, "/tmp/rmitm.pcap");
 	c_priv->pcap_dumper = s_priv->pcap_dumper;
+
+	c_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
+	s_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
 
 	s_priv->o_trans = c_trans;
 	c_priv->o_trans = child_trans;

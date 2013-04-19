@@ -38,40 +38,40 @@ struct ipv6_hdr
 };
 
 /*
- *  UDP header
- *  User Data Protocol
- *  Static header size: 8 bytes
- */
-struct udp_hdr
-{
-    u_int16_t uh_sport;       /* soure port */
-    u_int16_t uh_dport;       /* destination port */
-    u_int16_t uh_ulen;        /* length */
-    u_int16_t uh_sum;         /* checksum */
-};
+ *  tcp header structure. This is the minimal header (20 bytes)
+ */ 
 
+typedef struct tcp_hdr {
+	u_int16_t th_sport;
+	u_int16_t th_dport;
+	u_int32_t th_seq_nr;
+	u_int32_t th_ack_nr;
+	u_int8_t th_data_off;
+	u_int8_t th_flags;
+	u_int16_t th_window;
+	u_int16_t th_chksum;
+	u_int16_t th_urgptr;
+} tcp_hdr_t;
 
-#define ETHER_ADDR_LEN 0x6
+#define TH_DO_MASK      0xf0
 
-/*
- *  Ethernet II header
- *  Static header size: 14 bytes
- */
-struct ethernet_hdr
-{
-    u_int8_t  ether_dhost[ETHER_ADDR_LEN];/* destination ethernet address */
-    u_int8_t  ether_shost[ETHER_ADDR_LEN];/* source ethernet address */
-    u_int16_t ether_type;                 /* protocol */
-};
+#define TH_FLAGS_MASK   0x3f
+#define THF_FIN         0x1
+#define THF_SYN         0x2
+#define THF_RST         0x4
+#define THF_PSH         0x8
+#define THF_ACK         0x10
+#define THF_URG         0x20
 
 struct pkt_hdr {
 	struct ipv6_hdr ipv6;
-	struct udp_hdr udp;
+	struct tcp_hdr tcp;
 	uint8_t data[0];
 };
 
 #define PACKET_HDR_LEN sizeof(struct pkt_hdr)
 
+#if 0
 #define	CHECKSUM_CARRY(x) \
     (~((x & 0xffff) + (x >> 16)) & 0xffff)
 
@@ -85,8 +85,8 @@ static uint16_t checksum(u_int16_t *data, int len) {
 	while (len > 1) {
 		sum += *data++;
 		len -= 2;
-                if (sum >= 0x10000)
-	                sum = (sum & 0xffff) + (sum >> 16);
+		if (sum >= 0x10000)
+			sum = (sum & 0xffff) + (sum >> 16);
 	}
 
 	if (len == 1) {
@@ -109,7 +109,7 @@ static void ipv6_udp_checksum(struct pkt_hdr *hdr) {
 
 //	hdr->udp.uh_sum = checksum((uint16_t*)hdr, ntohs(hdr->ipv6.ip_len))
 }
-
+#endif
 static inline int min(int a, int b) {
 	return (a < b) ? a: b;
 }
