@@ -53,36 +53,43 @@
 
 #define CHUNK_SIZE 1024*1024 // nfs page size
 #define RECV_NUM 4
-#define NUM_SGE 1
 #define PACKET_HARD_MAX_LEN (64*1024-1)
 #define PACKET_TRUNC_LEN 1000
 
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
+
+struct datalock {
+	msk_data_t *data;
+	pthread_mutex_t lock;
+};
+
 struct privatedata {
 	pcap_dumper_t *pcap_dumper;
 	uint32_t seq_nr;
 	msk_trans_t *o_trans;
 	struct ibv_mr *mr;
-	msk_data_t *first_rdata;
-	msk_data_t *first_data;
-	pthread_mutex_t *lock;
-	pthread_cond_t *cond;
+	struct datalock *first_datalock;
+	pthread_mutex_t *plock;
+	pthread_cond_t *pcond;
 };
 
 void callback_recv(msk_trans_t *, void*);
 
 void callback_send(msk_trans_t *trans, void *arg) {
-	msk_data_t *data = arg;
+	struct datalock *datalock = arg;
 	struct privatedata *priv = trans->private_data;
 
-	if (!data || !priv) {
+	if (!datalock || !priv) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
 
-	msk_post_n_recv(priv->o_trans, data, NUM_SGE, priv->mr, callback_recv, data);
+	pthread_mutex_lock(&datalock->lock);
+	if (msk_post_recv(priv->o_trans, datalock->data, priv->mr, callback_recv, datalock))
+		ERROR_LOG("post_recv failed in send callback!");
+	pthread_mutex_unlock(&datalock->lock);
 }
 
 void callback_disconnect(msk_trans_t *trans) {
@@ -91,38 +98,40 @@ void callback_disconnect(msk_trans_t *trans) {
 	if (!priv)
 		return;
 
-	pthread_mutex_lock(priv->lock);
-	pthread_cond_broadcast(priv->cond);
-	pthread_mutex_unlock(priv->lock);
+	pthread_mutex_lock(priv->plock);
+	pthread_cond_broadcast(priv->pcond);
+	pthread_mutex_unlock(priv->plock);
 }
 
 void callback_recv(msk_trans_t *trans, void *arg) {
-	msk_data_t *data = arg;
+	struct datalock *datalock = arg;
 	struct pcap_pkthdr pcaphdr;
 	struct pkt_hdr *packet;
 	struct privatedata *priv = trans->private_data;
 
-	if (!data || !priv) {
+	if (!datalock || !priv) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
 
-	msk_post_send(priv->o_trans, data, priv->mr, callback_send, data);
+	pthread_mutex_lock(&datalock->lock);
+	msk_post_send(priv->o_trans, datalock->data, priv->mr, callback_send, datalock);
 
 	gettimeofday(&pcaphdr.ts, NULL);
-	pcaphdr.len = min(data->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
+	pcaphdr.len = min(datalock->data->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
 	pcaphdr.caplen = min(pcaphdr.len, PACKET_TRUNC_LEN);
 
-	packet = (struct pkt_hdr*)(data->data - PACKET_HDR_LEN);
+	packet = (struct pkt_hdr*)(datalock->data->data - PACKET_HDR_LEN);
 
 	packet->ipv6.ip_len = htons(pcaphdr.len);
 	packet->tcp.th_seq_nr = priv->seq_nr;
 	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pcaphdr.len - sizeof(struct pkt_hdr));
 	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 
-	pthread_mutex_lock(priv->lock);
+	pthread_mutex_lock(priv->plock);
 	pcap_dump((u_char*)priv->pcap_dumper, &pcaphdr, (u_char*)packet);
-	pthread_mutex_unlock(priv->lock);
+	pthread_mutex_unlock(priv->plock);
+	pthread_mutex_unlock(&datalock->lock);
 }
 
 void print_help(char **argv) {
@@ -152,24 +161,24 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(msk_post_n_recv(trans, &priv->first_rdata[NUM_SGE*i], NUM_SGE, mr, callback_recv, &priv->first_rdata[NUM_SGE*i]));
+		TEST_Z(msk_post_recv(trans, (&priv->first_datalock[i])->data, mr, callback_recv, &priv->first_datalock[i]));
 
 	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
 	/* finalize_connect first, finalize_accept second */
 	if (!trans->server) {
-		pthread_mutex_lock(priv->lock);
+		pthread_mutex_lock(priv->plock);
 		TEST_Z(msk_finalize_connect(trans));
-		pthread_cond_signal(priv->cond);
+		pthread_cond_signal(priv->pcond);
 	} else {
-		pthread_cond_wait(priv->cond, priv->lock);
+		pthread_cond_wait(priv->pcond, priv->plock);
 		TEST_Z(msk_finalize_accept(trans));
 	}
 
 
 	/* Wait till either connection has a disconnect callback */
-	pthread_cond_wait(priv->cond, priv->lock);
-	pthread_mutex_unlock(priv->lock);
+	pthread_cond_wait(priv->pcond, priv->plock);
+	pthread_mutex_unlock(priv->plock);
 
 	msk_destroy_trans(&trans);
 
@@ -194,12 +203,12 @@ int main(int argc, char **argv) {
 	// sane values for optional or non-configurable elements
 	s_attr.rq_depth = RECV_NUM+1;
 	s_attr.sq_depth = RECV_NUM+1;
-	s_attr.max_recv_sge = NUM_SGE;
+	s_attr.max_recv_sge = 1;
 	s_attr.addr.sa_in.sin_family = AF_INET;
 	s_attr.disconnect_callback = callback_disconnect;
 	c_attr.rq_depth = RECV_NUM+1;
 	c_attr.sq_depth = RECV_NUM+1;
-	c_attr.max_recv_sge = NUM_SGE;
+	c_attr.max_recv_sge = 1;
 	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
 
@@ -294,7 +303,7 @@ int main(int argc, char **argv) {
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 
-	const size_t mr_size = 2*(RECV_NUM+1)*NUM_SGE*(CHUNK_SIZE+PACKET_HDR_LEN)*sizeof(char);
+	const size_t mr_size = 2*(RECV_NUM+1)*(CHUNK_SIZE+PACKET_HDR_LEN)*sizeof(char);
 
 	TEST_NZ(rdmabuf = malloc(mr_size));
 	memset(rdmabuf, 0, mr_size);
@@ -302,10 +311,12 @@ int main(int argc, char **argv) {
 	TEST_NZ(mr = msk_reg_mr(c_trans, rdmabuf, mr_size, IBV_ACCESS_LOCAL_WRITE));
 
 
-	msk_data_t *rdata;
-	int i, j;
+	msk_data_t *data;
+	struct datalock *datalock;
+	int i;
 
-	TEST_NZ(rdata = malloc(NUM_SGE*2*RECV_NUM*sizeof(msk_data_t*)*sizeof(msk_data_t)));
+	TEST_NZ(data = malloc(2*RECV_NUM*sizeof(msk_data_t)));
+	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
 
 	struct pkt_hdr pkt_hdr;
 
@@ -344,11 +355,11 @@ int main(int argc, char **argv) {
 			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
 			pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.src_sin.sin_port;
 		}
-		for (j=0; j<NUM_SGE; j++) {
-			memcpy(rdmabuf+(NUM_SGE*i+j)*(CHUNK_SIZE+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
-			rdata[NUM_SGE*i+j].data=rdmabuf+(NUM_SGE*i+j)*(CHUNK_SIZE+PACKET_HDR_LEN)+PACKET_HDR_LEN;
-			rdata[NUM_SGE*i+j].max_size=CHUNK_SIZE;
-		}
+		memcpy(rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
+		data[i].data=rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN)+PACKET_HDR_LEN;
+		data[i].max_size=CHUNK_SIZE;
+		datalock[i].data = &data[i];
+		pthread_mutex_init(&datalock[i].lock, NULL);
 	}
 
 	// set up the data needed to communicate
@@ -369,22 +380,22 @@ int main(int argc, char **argv) {
 	s_priv->o_trans = c_trans;
 	c_priv->o_trans = child_trans;
 
-	s_priv->first_rdata    = rdata;
+	s_priv->first_datalock = datalock;
 	s_priv->mr             = mr;
-	c_priv->first_rdata    = rdata + NUM_SGE*RECV_NUM;
+	c_priv->first_datalock = datalock + RECV_NUM;
 	c_priv->mr             = mr;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
-	c_priv->lock = &lock;
-	s_priv->lock = &lock;
-	s_priv->cond = &cond;
-	c_priv->cond = &cond;
+	c_priv->plock = &lock;
+	s_priv->plock = &lock;
+	s_priv->pcond = &cond;
+	c_priv->pcond = &cond;
 
 
 	pthread_t s_threadid, c_threadid, flushthrid;
-	pthread_mutex_lock(c_priv->lock);
+	pthread_mutex_lock(c_priv->plock);
 	pthread_create(&s_threadid, NULL, handle_trans, child_trans);
 	pthread_create(&c_threadid, NULL, handle_trans, c_trans);
 	pthread_create(&flushthrid, NULL, flush_thread, &c_priv->pcap_dumper);
@@ -403,9 +414,8 @@ int main(int argc, char **argv) {
 	pthread_mutex_destroy(&lock);
 	free(c_priv);
 	free(s_priv);
-/*	for (i=0; i<2*RECV_NUM; i++)
-		free(rdata[i]); */
-	free(rdata);
+	free(datalock);
+	free(data);
 	free(rdmabuf);
 
 	msk_destroy_trans(&s_trans);
