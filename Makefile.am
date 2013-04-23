@@ -26,4 +26,5 @@ doc:
 
 EXTRA_DIST=libmooshika.spec \
            src/log.h \
+           src/rmitm.h \
            LICENSE
