@@ -60,6 +60,7 @@ struct msk_ctx {
 	struct rdmactx *next;		/**< next context */
 	msk_data_t *pdata;
 	ctx_callback_t callback;
+	ctx_callback_t err_callback;
 	union {
 		struct ibv_recv_wr rwr;
 		struct ibv_send_wr wwr;
@@ -357,6 +358,16 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 		if (wc.status) {
 			if (trans->state != MSK_CLOSED)
 				ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
+
+			ctx = (msk_ctx_t *)wc.wr_id;
+			if (ctx && ctx->err_callback)
+				ctx->err_callback(trans, ctx->pdata, ctx->callback_arg);
+
+                        pthread_mutex_lock(&trans->lock);
+	                ctx->used = 0;
+                        pthread_cond_broadcast(&trans->cond);
+	                pthread_mutex_unlock(&trans->lock);
+
 			return wc.status;
 		}
 
@@ -368,7 +379,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 
 			ctx = (msk_ctx_t *)wc.wr_id;
 			if (ctx->callback)
-				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
+				((ctx_callback_t)ctx->callback)(trans, ctx->pdata, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
@@ -398,7 +409,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 				pdata->size = len;
 
 			if (ctx->callback)
-				((ctx_callback_t)ctx->callback)(trans, ctx->callback_arg);
+				((ctx_callback_t)ctx->callback)(trans, ctx->pdata, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
@@ -1101,11 +1112,12 @@ int msk_connect(msk_trans_t *trans) {
  * @param num_sge      [IN]  the number of elements in pdata to register
  * @param mr           [IN]  the mr in which the data lives
  * @param callback     [IN]  function that'll be called when done
+ * @param err_callback [IN]  function that'll be called on error
  * @param callback_arg [IN]  argument to give to the callback
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
+int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	INFO_LOG("posting recv");
 	msk_ctx_t *rctx;
 	int i, ret;
@@ -1139,6 +1151,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	rctx->pos = 0;
 	rctx->next = NULL;
 	rctx->callback = callback;
+	rctx->err_callback = err_callback;
 	rctx->callback_arg = callback_arg;
 	rctx->pdata = pdata;
 
@@ -1168,7 +1181,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	return 0;
 }
 
-static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
+static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	INFO_LOG("posting a send with op %d", opcode);
 	msk_ctx_t *wctx;
 	int i, ret;
@@ -1215,6 +1228,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 	wctx->pos = 0;
 	wctx->next = NULL;
 	wctx->callback = callback;
+	wctx->err_callback = err_callback;
 	wctx->callback_arg = callback_arg;
 	wctx->pdata = pdata;
 
@@ -1272,19 +1286,20 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
  * @param num_sge      [IN] the number of elements in pdata to send
  * @param mr           [IN] the mr in which the data lives
  * @param callback     [IN] function that'll be called when done
+ * @param err_callback [IN] function that'll be called on error
  * @param callback_arg [IN] argument to give to the callback
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_post_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, callback_arg);
+int msk_post_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_SEND, pdata, num_sge, mr, NULL, callback, err_callback, callback_arg);
 }
 
 /**
  * msk_wait_callback: send/recv callback that just unlocks a mutex.
  *
  */
-static void msk_wait_callback(msk_trans_t *trans, void *arg) {
+static void msk_wait_callback(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	pthread_mutex_t *lock = arg;
 	pthread_mutex_unlock(lock);
 }
@@ -1295,7 +1310,7 @@ static void msk_wait_callback(msk_trans_t *trans, void *arg) {
  *
  * @param trans   [IN]
  * @param pdata   [OUT] the data buffer to be filled with the received data
- * @param num_sge [IN] the number of elements in pdata to register
+ * @param num_sge [IN]  the number of elements in pdata to register
  * @param mr      [IN]  the memory region in which data lives
  *
  * @return 0 on success, the value of errno on error
@@ -1305,7 +1320,7 @@ int msk_wait_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_n_recv(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
+	ret = msk_post_n_recv(trans, pdata, num_sge, mr, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1330,7 +1345,7 @@ int msk_wait_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_n_send(trans, pdata, num_sge, mr, msk_wait_callback, &lock);
+	ret = msk_post_n_send(trans, pdata, num_sge, mr, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1347,12 +1362,12 @@ int msk_wait_n_send(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 // server specific:
 
 
-int msk_post_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, num_sge, mr, rloc, callback, callback_arg);
+int msk_post_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, pdata, num_sge, mr, rloc, callback, err_callback, callback_arg);
 }
 
-int msk_post_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, void* callback_arg) {
-	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, num_sge, mr, rloc, callback, callback_arg);
+int msk_post_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, pdata, num_sge, mr, rloc, callback, err_callback, callback_arg);
 }
 
 int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc) {
@@ -1360,7 +1375,7 @@ int msk_wait_n_read(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_n_read(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
+	ret = msk_post_n_read(trans, pdata, num_sge, mr, rloc, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);
@@ -1377,7 +1392,7 @@ int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct 
 	int ret;
 
 	pthread_mutex_lock(&lock);
-	ret = msk_post_n_write(trans, pdata, num_sge, mr, rloc, msk_wait_callback, &lock);
+	ret = msk_post_n_write(trans, pdata, num_sge, mr, rloc, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
 		pthread_mutex_lock(&lock);

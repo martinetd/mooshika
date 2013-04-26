@@ -51,8 +51,7 @@
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
-struct datamr {
-	msk_data_t *data;
+struct cb_arg {
 	struct ibv_mr *mr;
 	msk_data_t *ackdata;
 	pthread_mutex_t *lock;
@@ -67,22 +66,25 @@ void callback_disconnect(msk_trans_t *trans) {
 	if (!trans->private_data)
 		return;
 
-	struct datamr *datamr = trans->private_data;
-	pthread_mutex_lock(datamr->lock);
-	pthread_cond_signal(datamr->cond);
-	pthread_mutex_unlock(datamr->lock);
+	struct cb_arg *cb_arg = trans->private_data;
+	pthread_mutex_lock(cb_arg->lock);
+	pthread_cond_signal(cb_arg->cond);
+	pthread_mutex_unlock(cb_arg->lock);
 }
 
-void callback_recv(msk_trans_t *trans, void *arg) {
-	struct datamr *datamr = arg;
+
+void callback_error(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
+	ERROR_LOG("error callback");
+}
+
+void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
+	struct cb_arg *cb_arg = arg;
 	int n;
 
-	if (!datamr) {
+	if (!cb_arg) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
-
-	msk_data_t *pdata = datamr->data;
 
 	if (pdata->size != 1 || pdata->data[0] != '\0') {
 	// either we get real data and write it to stdout
@@ -92,15 +94,15 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 		if (n != pdata->size)
 			ERROR_LOG("Wrote less than what was actually received");
 
-		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
-		msk_post_send(trans, datamr->ackdata, datamr->mr, NULL, NULL);
+		msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg);
+		msk_post_send(trans, cb_arg->ackdata, cb_arg->mr, NULL, NULL, NULL);
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
+		msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg);
 
-		pthread_mutex_lock(datamr->lock);
-		pthread_cond_signal(datamr->cond);
-		pthread_mutex_unlock(datamr->lock);
+		pthread_mutex_lock(cb_arg->lock);
+		pthread_cond_signal(cb_arg->cond);
+		pthread_mutex_unlock(cb_arg->lock);
 	}
 }
 
@@ -120,7 +122,7 @@ void* handle_trans(void *arg) {
 	pthread_cond_t cond;
 
 	msk_data_t **rdata;
-	struct datamr *datamr;
+	struct cb_arg *cb_arg;
 	int i;
 
 	struct pollfd pollfd_stdin;
@@ -145,21 +147,20 @@ void* handle_trans(void *arg) {
 
 	// malloc receive structs as well as a custom callback argument, and post it for future receive
 	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
-	TEST_NZ(datamr = malloc(RECV_NUM*sizeof(struct datamr)));
+	TEST_NZ(cb_arg = malloc(RECV_NUM*sizeof(struct cb_arg)));
 
 	for (i=0; i < RECV_NUM; i++) {
 		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE;
 		rdata[i]->max_size=CHUNK_SIZE;
-		datamr[i].data = rdata[i];
-		datamr[i].mr = mr;
-		datamr[i].ackdata = ackdata; 
-		datamr[i].lock = &lock;
-		datamr[i].cond = &cond;
-		TEST_Z(msk_post_recv(trans, rdata[i], mr, callback_recv, &(datamr[i])));
+		cb_arg[i].mr = mr;
+		cb_arg[i].ackdata = ackdata;
+		cb_arg[i].lock = &lock;
+		cb_arg[i].cond = &cond;
+		TEST_Z(msk_post_recv(trans, rdata[i], mr, callback_recv, callback_error, &(cb_arg[i])));
 	}
 
-	trans->private_data = datamr;
+	trans->private_data = cb_arg;
 
 	// receive buffers are posted, we can finalize the connection
 	if (trans->server) {
@@ -193,7 +194,7 @@ void* handle_trans(void *arg) {
 
 		// post our data and wait for the other end's ack (sent in callback_recv)
 		pthread_mutex_lock(&lock);
-		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL));
+		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	
@@ -203,7 +204,7 @@ void* handle_trans(void *arg) {
 
 	// free stuff
 	free(wdata);
-	free(datamr);
+	free(cb_arg);
 	free(rdata);
 	free(ackdata);
 	free(rdmabuf);

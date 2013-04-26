@@ -76,9 +76,14 @@ struct privatedata {
 	pthread_cond_t *pcond;
 };
 
-void callback_recv(msk_trans_t *, void*);
+void callback_recv(msk_trans_t *, msk_data_t *, void*);
 
-void callback_send(msk_trans_t *trans, void *arg) {
+void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
+	ERROR_LOG("error callback");
+}
+
+
+void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	struct datalock *datalock = arg;
 	struct privatedata *priv = trans->private_data;
 
@@ -88,7 +93,7 @@ void callback_send(msk_trans_t *trans, void *arg) {
 	}
 
 	pthread_mutex_lock(&datalock->lock);
-	if (msk_post_recv(priv->o_trans, datalock->data, priv->mr, callback_recv, datalock))
+	if (msk_post_recv(priv->o_trans, pdata, priv->mr, callback_recv, callback_error, datalock))
 		ERROR_LOG("post_recv failed in send callback!");
 	pthread_mutex_unlock(&datalock->lock);
 }
@@ -104,7 +109,7 @@ void callback_disconnect(msk_trans_t *trans) {
 	pthread_mutex_unlock(priv->plock);
 }
 
-void callback_recv(msk_trans_t *trans, void *arg) {
+void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	struct datalock *datalock = arg;
 	struct pcap_pkthdr pcaphdr;
 	struct pkt_hdr *packet;
@@ -116,13 +121,13 @@ void callback_recv(msk_trans_t *trans, void *arg) {
 	}
 
 	pthread_mutex_lock(&datalock->lock);
-	msk_post_send(priv->o_trans, datalock->data, priv->mr, callback_send, datalock);
+	msk_post_send(priv->o_trans, pdata, priv->mr, callback_send, callback_error, datalock);
 
 	gettimeofday(&pcaphdr.ts, NULL);
-	pcaphdr.len = min(datalock->data->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
+	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
 	pcaphdr.caplen = min(pcaphdr.len, PACKET_TRUNC_LEN);
 
-	packet = (struct pkt_hdr*)(datalock->data->data - PACKET_HDR_LEN);
+	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
 	packet->ipv6.ip_len = htons(pcaphdr.len);
 	packet->tcp.th_seq_nr = priv->seq_nr;
@@ -167,7 +172,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(mr = priv->mr);
 
 	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(msk_post_recv(trans, (&priv->first_datalock[i])->data, mr, callback_recv, &priv->first_datalock[i]));
+		TEST_Z(msk_post_recv(trans, (&priv->first_datalock[i])->data, mr, callback_recv, callback_error, &priv->first_datalock[i]));
 
 	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
