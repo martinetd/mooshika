@@ -409,7 +409,7 @@ static void *msk_cm_thread(void *arg) {
 	while (internals->run_threads > 0) {
 		nfds = epoll_wait(internals->cm_epollfd, epoll_events, MAX_EVENTS, 100);
 
-		if (nfds == 0)
+		if (nfds == 0 || (nfds == -1 && errno == EINTR))
 			continue;
 
 		if (nfds == -1) {
@@ -550,7 +550,7 @@ static void *msk_cq_thread(void *arg) {
 
 	while (internals->run_threads > 0) {
 		nfds = epoll_wait(internals->cq_epollfd, epoll_events, MAX_EVENTS, 100);
-		if (nfds == 0)
+		if (nfds == 0 || (nfds == -1 && errno == EINTR))
 			continue;
 
 		if (nfds == -1) {
