@@ -1174,12 +1174,6 @@ int msk_finalize_connect(msk_trans_t *trans) {
 		INFO_LOG("Got a cond, state: %i", trans->state);
 	}
 
-	if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
-		ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
-		return ret;
-	}
-	msk_cq_addfd(trans);
-
 	pthread_mutex_unlock(&trans->lock);
 
 	return 0;
