@@ -4,9 +4,9 @@ AM_CFLAGS = -g -D_REENTRANT -Wall -Wimplicit -Wformat -Wmissing-braces -Wno-poin
 
 lib_LTLIBRARIES = libmooshika.la libmooshika_shm.la
 libmooshika_la_SOURCES = trans_rdma.c
-libmooshika_la_LDFLAGS = -version-info 1:0:0
+libmooshika_la_LDFLAGS = -version-info 2:0:0
 libmooshika_shm_la_SOURCES = trans_shm.c
-libmooshika_shm_la_LDFLAGS = -version-info 1:0:0
+libmooshika_shm_la_LDFLAGS = -version-info 2:0:0
 
 bin_PROGRAMS = rcat rmitm
 rcat_SOURCES = rcat.c
