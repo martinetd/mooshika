@@ -244,10 +244,10 @@ out:
 }
 
 /**
- * msk_cq_addfd: Adds trans' completion queue fd to the epoll wait
+ * msk_addfd: Adds trans' completion queue fd to the epoll wait
  * Returns 0 on success, errno value on error.
  */
-static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
+static int msk_addfd(msk_trans_t *trans, int fd, int epollfd, int event) {
 	int flags, ret;
 	struct epoll_event ev;
 	//make get_cq_event_nonblocking for poll
@@ -259,7 +259,7 @@ static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
 		return ret;
 	}
 
-	ev.events = EPOLLIN;
+	ev.events = event;
 	ev.data.ptr = trans;
 
 	ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &ev);
@@ -273,11 +273,11 @@ static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
 }
 
 static inline int msk_cq_addfd(msk_trans_t *trans) {
-	return msk_addfd(trans, trans->comp_channel->fd, internals->cq_epollfd);
+	return msk_addfd(trans, trans->comp_channel->fd, internals->cq_epollfd, EPOLLET | EPOLLONESHOT | EPOLLIN);
 }
 
 static inline int msk_cm_addfd(msk_trans_t *trans){
-	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd);
+	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd, EPOLLIN);
 }
 
 /**
@@ -454,9 +454,19 @@ static void *msk_cm_thread(void *arg) {
 static int msk_cq_event_handler(msk_trans_t *trans) {
 	struct ibv_wc wc;
 	msk_ctx_t* ctx;
-	int ret;
+	int ret, loop;
 
-	while ((ret = ibv_poll_cq(trans->cq, 1, &wc)) == 1) {
+	loop = 1;
+
+	while (loop) {
+		pthread_mutex_lock(&trans->lock);
+		ret = ibv_poll_cq(trans->cq, 1, &wc);
+		pthread_mutex_unlock(&trans->lock);
+
+		/* stop the loop on error or if nothing has been read */
+		if (ret <= 0)
+			break;
+
 		ret = 0;
 
 		if (trans->bad_recv_wr) {
@@ -478,7 +488,8 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			pthread_cond_broadcast(&trans->cond);
 			pthread_mutex_unlock(&trans->lock);
 
-			return wc.status;
+			ibv_ack_cq_events(trans->cq, 1);
+			return -wc.status;
 		}
 
 		switch (wc.opcode) {
@@ -529,8 +540,10 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 
 		default:
 			ERROR_LOG("unknown opcode: %d", wc.opcode);
-			return -1;
+			ret = -EINVAL;
 		}
+
+		ibv_ack_cq_events(trans->cq, 1);
 	}
 
 	return 0;
@@ -543,13 +556,13 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 static void *msk_cq_thread(void *arg) {
 	msk_trans_t *trans;
 	struct ibv_cq *ev_cq;
-	struct epoll_event epoll_events[MAX_EVENTS];
-	int nfds, n;
+	struct epoll_event epoll_event;
+	int nfds;
 	void *ev_ctx;
 	int ret;
 
 	while (internals->run_threads > 0) {
-		nfds = epoll_wait(internals->cq_epollfd, epoll_events, MAX_EVENTS, 100);
+		nfds = epoll_wait(internals->cq_epollfd, &epoll_event, 1, 100);
 		if (nfds == 0 || (nfds == -1 && errno == EINTR))
 			continue;
 
@@ -559,36 +572,43 @@ static void *msk_cq_thread(void *arg) {
 			break;
 		}
 
-		for (n = 0; n < nfds; ++n) {
-			trans = (msk_trans_t*)epoll_events[n].data.ptr;
-			ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
-			if (ret) {
-				ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
-				continue;
-			}
-			if (ev_cq != trans->cq) {
-				ERROR_LOG("Unknown cq, leaving thread.");
-				continue;
-			}
+		trans = (msk_trans_t*)epoll_event.data.ptr;
+		ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
+		if (ret) {
+			ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
+			continue;
+		}
+		if (ev_cq != trans->cq) {
+			ERROR_LOG("Unknown cq, leaving thread.");
+			continue;
+		}
 
-			ret = ibv_req_notify_cq(trans->cq, 0);
-			if (ret) {
-				ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
+		ret = ibv_req_notify_cq(trans->cq, 0);
+		if (ret) {
+			ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
+			continue;
+		}
+
+		ret = msk_cq_event_handler(trans);
+		if (ret == 0) {
+			ret = epoll_ctl(internals->cq_epollfd, EPOLL_CTL_MOD, trans->comp_channel->fd, &epoll_event);
+			if (ret == -1) {
+				ret = errno;
+				ERROR_LOG("Could not re-activate epoll for trans %p: %s (%d)", trans, strerror(ret), ret);
 				continue;
 			}
-
+			/* double check nothing came since we got there */
 			ret = msk_cq_event_handler(trans);
-			ibv_ack_cq_events(trans->cq, 1);
-			if (ret) {
-				if (trans->state != MSK_CLOSED) {
-					ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
-					pthread_mutex_lock(&trans->lock);
-					trans->state = MSK_ERROR;
-					pthread_cond_signal(&trans->cond);
-					pthread_mutex_unlock(&trans->lock);
-				}
-				continue;
+		}
+		if (ret) {
+			if (trans->state != MSK_CLOSED) {
+				ERROR_LOG("something went wrong with our cq_event_handler (%d)", -ret);
+				pthread_mutex_lock(&trans->lock);
+				trans->state = MSK_ERROR;
+				pthread_cond_signal(&trans->cond);
+				pthread_mutex_unlock(&trans->lock);
 			}
+			continue;
 		}
 	}
 
