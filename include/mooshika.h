@@ -77,12 +77,10 @@ struct msk_trans {
 	} state;			/**< tracks the transport state machine for connection setup and tear down */
 	struct rdma_cm_id *cm_id;	/**< The RDMA CM ID */
 	struct rdma_event_channel *event_channel;
-	pthread_t cm_thread;		/**< Thread id for connection manager */
 	struct ibv_comp_channel *comp_channel;
 	struct ibv_pd *pd;		/**< Protection Domain pointer */
 	struct ibv_qp *qp;		/**< Queue Pair pointer */
 	struct ibv_cq *cq;		/**< Completion Queue pointer */
-	pthread_t cq_thread;		/**< Thread id for completion queue handler */
 	disconnect_callback_t disconnect_callback;
 	void *private_data;
 	long timeout;			/**< Number of mSecs to wait for connection management events */

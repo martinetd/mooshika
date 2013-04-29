@@ -41,7 +41,8 @@
 #include <netinet/in.h> //sock_addr_in
 #include <unistd.h>	//fcntl
 #include <fcntl.h>	//fcntl
-#include <poll.h>	//poll
+#include <sys/epoll.h>	//epoll
+#define MAX_EVENTS 10
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
@@ -68,6 +69,59 @@ struct msk_ctx {
 	void *callback_arg;
 	struct ibv_sge sg_list[0]; 		/**< this is actually an array. note that when you malloc you have to add its size */
 };
+
+
+struct msk_internals {
+	unsigned int run_threads;
+	pthread_t cm_thread;		/**< Thread id for connection manager */
+	int cm_epollfd;
+	pthread_t cq_thread;		/**< Thread id for completion queue handler */
+	int cq_epollfd;
+	pthread_mutex_t lock;
+};
+
+
+/* GLOBAL VARIABLES */
+
+static struct msk_internals *internals = NULL;
+
+
+void __attribute__ ((constructor)) my_init(void) {
+	internals = malloc(sizeof(*internals));
+	if (!internals) {
+		ERROR_LOG("Out of memory");
+	}
+
+	memset(internals, 0, sizeof(*internals));
+
+	internals->run_threads = 0;
+	pthread_mutex_init(&internals->lock, NULL);
+}
+
+void __attribute__ ((destructor)) my_fini(void) {
+
+	if (internals) {
+		internals->run_threads = 0;
+
+		if (internals->cm_thread) {
+			pthread_join(internals->cm_thread, NULL);
+			internals->cm_thread = 0;
+		}
+		if (internals->cq_thread) {
+			pthread_join(internals->cq_thread, NULL);
+			internals->cq_thread = 0;
+		}
+
+		pthread_mutex_destroy(&internals->lock);
+		free(internals);
+		internals = NULL;
+	}
+}
+
+/* forward declarations */
+
+static void *msk_cq_thread(void *arg);
+
 
 /* UTILITY FUNCTIONS */
 
@@ -136,8 +190,7 @@ void msk_print_devinfo(msk_trans_t *trans) {
  * msk_create_thread: Simple wrapper around pthread_create
  */
 #define THREAD_STACK_SIZE 2116488
-static inline int msk_create_thread(pthread_t *thread,
-              void *(*start_routine)(void*), void *arg) {
+static inline int msk_create_thread(pthread_t *thrid, void *(*start_routine)(void*), void *arg) {
 
 	pthread_attr_t attr;
 	int ret;
@@ -163,10 +216,69 @@ static inline int msk_create_thread(pthread_t *thread,
 		return ret;
 	}
 
-	return pthread_create(thread, &attr, start_routine, arg);
+	return pthread_create(thrid, &attr, start_routine, arg);
 }
 
-/* INIT/SHUTDOWN FUNCTIONS */
+static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_routine)(void*), void *arg, int *epollfd) {
+	int ret;
+
+	pthread_mutex_lock(&internals->lock);
+	if (*thrid == 0) {
+		*epollfd = epoll_create(10);
+		if (*epollfd == -1) {
+			ret = errno;
+			ERROR_LOG("epoll_create failed: %s (%d)", strerror(ret), ret);
+			goto out;
+		}
+
+		if ((ret = msk_create_thread(thrid, start_routine, arg))) {
+			ERROR_LOG("Could not create thread: %s (%d)", strerror(ret), ret);
+			internals->cq_thread = 0;
+			goto out;
+		}
+	}
+
+out:
+	pthread_mutex_unlock(&internals->lock);
+	return 0;
+}
+
+/**
+ * msk_cq_addfd: Adds trans' completion queue fd to the epoll wait
+ * Returns 0 on success, errno value on error.
+ */
+static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
+	int flags, ret;
+	struct epoll_event ev;
+	//make get_cq_event_nonblocking for poll
+	flags = fcntl(fd, F_GETFL);
+	ret = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+	if (ret < 0) {
+		ret = errno;
+		ERROR_LOG("Failed to make the comp channel nonblock");
+		return ret;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.ptr = trans;
+
+	ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &ev);
+	if (ret == -1) {
+		ret = errno;
+		ERROR_LOG("Failed to add fd to epoll");
+		return ret;
+	}
+
+	return 0;
+}
+
+static inline int msk_cq_addfd(msk_trans_t *trans) {
+	return msk_addfd(trans, trans->comp_channel->fd, internals->cq_epollfd);
+}
+
+static inline int msk_cm_addfd(msk_trans_t *trans){
+	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd);
+}
 
 /**
  * msk_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone)
@@ -206,6 +318,13 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		INFO_LOG("ESTABLISHED");
 		pthread_mutex_lock(&trans->lock);
 		trans->state = MSK_CONNECTED;
+
+		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
+			ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+		msk_cq_addfd(trans);
+
 		pthread_cond_signal(&trans->cond);
 		pthread_mutex_unlock(&trans->lock);
 		break;
@@ -281,54 +400,45 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
  *
  */
 static void *msk_cm_thread(void *arg) {
-	msk_trans_t *trans = arg;
+	msk_trans_t *trans;
 	struct rdma_cm_event *event;
+	struct epoll_event epoll_events[MAX_EVENTS];
+	int nfds, n;
 	int ret;
 
-	//make get_cq_event_nonblocking for poll
-	int flags;
-	flags = fcntl(trans->event_channel->fd, F_GETFL);
-	ret = fcntl(trans->event_channel->fd, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0) {
-		ERROR_LOG("Failed to make the comp channel nonblock");
-		pthread_exit(NULL);
-	}
+	while (internals->run_threads > 0) {
+		nfds = epoll_wait(internals->cm_epollfd, epoll_events, MAX_EVENTS, 100);
 
-	struct pollfd event_pollfd;
-	event_pollfd.fd = trans->event_channel->fd;
-	event_pollfd.events = POLLIN;
-	event_pollfd.revents = 0;
-
-	while (trans->state != MSK_CLOSED) {
-		ret = poll(&event_pollfd, 1, 100);
-
-		if (ret == 0)
+		if (nfds == 0)
 			continue;
 
-		if (ret == -1) {
-			if (trans->state != MSK_CLOSED)
-				ERROR_LOG("poll failed");
-			break;
-		}
-
-		if (!trans->event_channel) {
-			if (trans->state != MSK_CLOSED)
-				ERROR_LOG("no event channel? :D");
-			break;
-		}
-
-		ret = rdma_get_cm_event(trans->event_channel, &event);
-		if (ret) {
+		if (nfds == -1) {
 			ret = errno;
-			ERROR_LOG("rdma_get_cm_event failed: %d. Stopping event watcher thread", ret);
+			ERROR_LOG("epoll_pwait failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
-		ret = msk_cma_event_handler(event->id, event);
-		rdma_ack_cm_event(event);
-		if (ret && (trans->state != MSK_LISTENING || trans == event->id->context)) {
-			if (trans->state != MSK_CLOSED)
-				ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
-			break;
+
+		for (n = 0; n < nfds; ++n) {
+			trans = (msk_trans_t*)epoll_events[n].data.ptr;
+			if (!trans->event_channel) {
+				if (trans->state != MSK_CLOSED)
+					ERROR_LOG("no event channel? :D");
+				continue;
+			}
+
+			ret = rdma_get_cm_event(trans->event_channel, &event);
+			if (ret) {
+				ret = errno;
+				ERROR_LOG("rdma_get_cm_event failed: %d. Stopping event watcher thread", ret);
+				continue;
+			}
+			ret = msk_cma_event_handler(event->id, event);
+			rdma_ack_cm_event(event);
+			if (ret && (trans->state != MSK_LISTENING || trans == event->id->context)) {
+				if (trans->state != MSK_CLOSED)
+					ERROR_LOG("something happened in cma_event_handler. Stopping event watcher thread");
+				continue;
+			}
 		}
 	}
 
@@ -363,10 +473,10 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			if (ctx && ctx->err_callback)
 				ctx->err_callback(trans, ctx->pdata, ctx->callback_arg);
 
-                        pthread_mutex_lock(&trans->lock);
-	                ctx->used = 0;
-                        pthread_cond_broadcast(&trans->cond);
-	                pthread_mutex_unlock(&trans->lock);
+			pthread_mutex_lock(&trans->lock);
+			ctx->used = 0;
+			pthread_cond_broadcast(&trans->cond);
+			pthread_mutex_unlock(&trans->lock);
 
 			return wc.status;
 		}
@@ -379,7 +489,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 
 			ctx = (msk_ctx_t *)wc.wr_id;
 			if (ctx->callback)
-				((ctx_callback_t)ctx->callback)(trans, ctx->pdata, ctx->callback_arg);
+				ctx->callback(trans, ctx->pdata, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
@@ -409,7 +519,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 				pdata->size = len;
 
 			if (ctx->callback)
-				((ctx_callback_t)ctx->callback)(trans, ctx->pdata, ctx->callback_arg);
+				ctx->callback(trans, ctx->pdata, ctx->callback_arg);
 
 			pthread_mutex_lock(&trans->lock);
 			ctx->used = 0;
@@ -431,63 +541,54 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
  *
  */
 static void *msk_cq_thread(void *arg) {
-	msk_trans_t *trans = arg;
+	msk_trans_t *trans;
 	struct ibv_cq *ev_cq;
+	struct epoll_event epoll_events[MAX_EVENTS];
+	int nfds, n;
 	void *ev_ctx;
 	int ret;
 
-	//make get_cq_event_nonblocking for poll
-	int flags;
-	flags = fcntl(trans->comp_channel->fd, F_GETFL);
-	ret = fcntl(trans->comp_channel->fd, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0) {
-		ERROR_LOG("Failed to make the comp channel nonblock");
-		pthread_exit(NULL);
-	}
-
-	struct pollfd comp_pollfd;
-	comp_pollfd.fd = trans->comp_channel->fd;
-	comp_pollfd.events = POLLIN;
-	comp_pollfd.revents = 0;
-
-	while (trans->state != MSK_CLOSED) {
-		ret = poll(&comp_pollfd, 1, 100);
-
-		if (ret == 0)
+	while (internals->run_threads > 0) {
+		nfds = epoll_wait(internals->cq_epollfd, epoll_events, MAX_EVENTS, 100);
+		if (nfds == 0)
 			continue;
 
-		if (ret == -1) {
-			ERROR_LOG("poll failed");
+		if (nfds == -1) {
+			ret = errno;
+			ERROR_LOG("epoll_pwait failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
-		ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
-		if (ret) {
-			ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
-			break;
-		}
-		if (ev_cq != trans->cq) {
-		 	ERROR_LOG("Unknown cq, leaving thread.");
-			break;
-		}
-
-		ret = ibv_req_notify_cq(trans->cq, 0);
-		if (ret) {
-			ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
-			break;
-		}
-
-		ret = msk_cq_event_handler(trans);
-		ibv_ack_cq_events(trans->cq, 1);
-		if (ret) {
-			if (trans->state != MSK_CLOSED) {
-				ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
-				pthread_mutex_lock(&trans->lock);
-				trans->state = MSK_ERROR;
-				pthread_cond_signal(&trans->cond);
-				pthread_mutex_unlock(&trans->lock);
+		for (n = 0; n < nfds; ++n) {
+			trans = (msk_trans_t*)epoll_events[n].data.ptr;
+			ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
+			if (ret) {
+				ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
+				continue;
 			}
-			break;
+			if (ev_cq != trans->cq) {
+				ERROR_LOG("Unknown cq, leaving thread.");
+				continue;
+			}
+
+			ret = ibv_req_notify_cq(trans->cq, 0);
+			if (ret) {
+				ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
+				continue;
+			}
+
+			ret = msk_cq_event_handler(trans);
+			ibv_ack_cq_events(trans->cq, 1);
+			if (ret) {
+				if (trans->state != MSK_CLOSED) {
+					ERROR_LOG("something went wrong with our cq_event_handler, leaving thread after ack.");
+					pthread_mutex_lock(&trans->lock);
+					trans->state = MSK_ERROR;
+					pthread_cond_signal(&trans->cond);
+					pthread_mutex_unlock(&trans->lock);
+				}
+				continue;
+			}
 		}
 	}
 
@@ -575,14 +676,24 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 			trans->event_channel = NULL;
 		}
 
-		if (trans->cm_thread)
-			pthread_join(trans->cm_thread, NULL);
-		if (trans->cq_thread)
-			pthread_join(trans->cq_thread, NULL);
-
 		// these two functions do the proper if checks
 		msk_destroy_buffer(trans);
 		msk_destroy_qp(trans);
+
+		pthread_mutex_lock(&internals->lock);
+		internals->run_threads--;
+		if (internals->run_threads == 0) {
+			if (internals->cm_thread) {
+				pthread_join(internals->cm_thread, NULL);
+				internals->cm_thread = 0;
+			}
+			if (internals->cq_thread) {
+				pthread_join(internals->cq_thread, NULL);
+				internals->cq_thread = 0;
+			}
+		}
+		pthread_mutex_unlock(&internals->lock);
+
 
 		//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
 		pthread_mutex_unlock(&trans->lock);
@@ -669,6 +780,10 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		msk_destroy_trans(&trans);
 		return ret;
 	}
+
+	pthread_mutex_lock(&internals->lock);
+	internals->run_threads++;
+	pthread_mutex_unlock(&internals->lock);
 
 	return 0;
 }
@@ -810,13 +925,13 @@ int msk_bind_server(msk_trans_t *trans) {
 	inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
 	INFO_LOG("addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
 
-        trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
-        if (!trans->conn_requests) {
-                ERROR_LOG("Could not allocate conn_requests buffer");
-                return ENOMEM;
-        }
+	trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
+	if (!trans->conn_requests) {
+		ERROR_LOG("Could not allocate conn_requests buffer");
+		return ENOMEM;
+	}
 
-        memset(trans->conn_requests, 0, trans->server * sizeof(struct rdma_cm_id*));
+	memset(trans->conn_requests, 0, trans->server * sizeof(struct rdma_cm_id*));
 
 
 
@@ -836,10 +951,11 @@ int msk_bind_server(msk_trans_t *trans) {
 
 	trans->state = MSK_LISTENING;
 
-	if ((ret = msk_create_thread(&trans->cm_thread, msk_cm_thread, trans))) {
-		ERROR_LOG("msk_create_thread failed: %s (%d)", strerror(ret), ret);
+	if ((ret = msk_check_create_epoll_thread(&internals->cm_thread, msk_cm_thread, trans, &internals->cm_epollfd))) {
+		ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
+	msk_cm_addfd(trans);
 
 	return 0;
 }
@@ -860,9 +976,6 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 	trans->cm_id->context = trans;
 	trans->state = MSK_CONNECT_REQUEST;
 
-	// we don't want to close cm thread when destroying the child
-	trans->cm_thread = 0;
-
 	memset(&trans->lock, 0, sizeof(pthread_mutex_t));
 	memset(&trans->cond, 0, sizeof(pthread_cond_t));
 
@@ -878,6 +991,10 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 		msk_destroy_trans(&trans);
 		return NULL;
 	}
+
+	pthread_mutex_lock(&internals->lock);
+	internals->run_threads++;
+	pthread_mutex_unlock(&internals->lock);
 
 	return trans;
 }
@@ -937,7 +1054,7 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 
 	struct rdma_cm_id *cm_id = NULL;
 	msk_trans_t *child_trans = NULL;
-	int i;
+	int i, ret;
 
 	if (!trans || trans->state != MSK_LISTENING) {
 		ERROR_LOG("trans isn't listening (after bind_server)?");
@@ -966,16 +1083,13 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 	child_trans = clone_trans(trans, cm_id);
 
 	if (child_trans) {
-		if (msk_setup_qp(child_trans)) {
+		if ((ret = msk_setup_qp(child_trans))) {
+			ERROR_LOG("Could not setup child trans's qp: %s (%d)", strerror(ret), ret);
 			msk_destroy_trans(&child_trans);
 			return NULL;
 		}
-		if (msk_setup_buffer(child_trans)) {
-			msk_destroy_trans(&child_trans);
-			return NULL;
-		}
-
-		if (msk_create_thread(&child_trans->cq_thread, msk_cq_thread, child_trans)) {
+		if ((ret = msk_setup_buffer(child_trans))) {
+			ERROR_LOG("Could not setup child trans's buffer: %s (%d)", strerror(ret), ret);
 			msk_destroy_trans(&child_trans);
 			return NULL;
 		}
@@ -1060,6 +1174,12 @@ int msk_finalize_connect(msk_trans_t *trans) {
 		INFO_LOG("Got a cond, state: %i", trans->state);
 	}
 
+	if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
+		ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+	msk_cq_addfd(trans);
+
 	pthread_mutex_unlock(&trans->lock);
 
 	return 0;
@@ -1085,17 +1205,17 @@ int msk_connect(msk_trans_t *trans) {
 		return EINVAL;
 	}
 
-	if ((ret = msk_create_thread(&trans->cm_thread, msk_cm_thread, trans)))
+	if ((ret = msk_check_create_epoll_thread(&internals->cm_thread, msk_cm_thread, trans, &internals->cm_epollfd))) {
+		ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 		return ret;
+	}
+	msk_cm_addfd(trans);
 
 	if ((ret = msk_bind_client(trans)))
 		return ret;
 	if ((ret = msk_setup_qp(trans)))
 		return ret;
 	if ((ret = msk_setup_buffer(trans)))
-		return ret;
-
-	if ((ret = msk_create_thread(&trans->cq_thread, msk_cq_thread, trans)))
 		return ret;
 
 	return 0;
@@ -1123,7 +1243,9 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 	int i, ret;
 
 	if (!trans || (trans->state != MSK_CONNECTED && trans->state != MSK_ROUTE_RESOLVED && trans->state != MSK_CONNECT_REQUEST)) {
-       		ERROR_LOG("trans isn't connected?");
+		ERROR_LOG("trans (%p) isn't connected?", trans);
+		if (trans)
+			ERROR_LOG("trans state: %d", trans->state);
 		return EINVAL;
 	}
 
@@ -1188,7 +1310,9 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 	uint32_t totalsize = 0;
 
 	if (!trans || trans->state != MSK_CONNECTED) {
-       		ERROR_LOG("trans isn't connected?");
+		ERROR_LOG("trans (%p) isn't connected?", trans);
+		if (trans)
+			ERROR_LOG("trans state: %d", trans->state);
 		return EINVAL;
 	}
 

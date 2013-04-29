@@ -91,6 +91,8 @@ struct msk_sem {
 	msk_list_t *ctx_last;
 };
 
+static pthread_t send_thread;
+static pthread_t recv_thread;
 
 /* UTILITY FUNCTIONS */
 
@@ -531,8 +533,8 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) {
 		ERROR_LOG("can't set pthread's join state");
 
 	pthread_mutex_lock(&trans->lock); // lock will be unlocked on cond_wait when recv_thread is ready
-	pthread_create(&trans->cq_thread, &attr_thr, msk_send_thread, trans);
-	pthread_create(&trans->cm_thread, &attr_thr, msk_recv_thread, trans);
+	pthread_create(&send_thread, &attr_thr, msk_send_thread, trans);
+	pthread_create(&recv_thread, &attr_thr, msk_recv_thread, trans);
 
 	msk_semop(trans, SHM_SEM, 1);
 	return trans;
@@ -583,8 +585,8 @@ int msk_connect(msk_trans_t *trans) {
 		ERROR_LOG("can't set pthread's join state");
 
 	pthread_mutex_lock(&trans->lock); // lock will be unlocked on cond_wait when recv_thread is ready
-	pthread_create(&trans->cq_thread, &attr_thr, msk_send_thread, trans);
-	pthread_create(&trans->cm_thread, &attr_thr, msk_recv_thread, trans);
+	pthread_create(&send_thread, &attr_thr, msk_send_thread, trans);
+	pthread_create(&recv_thread, &attr_thr, msk_recv_thread, trans);
 	msk_semop(trans, SHM_SEM, 1);
 
 	return 0;

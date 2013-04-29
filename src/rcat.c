@@ -87,7 +87,7 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	}
 
 	if (pdata->size != 1 || pdata->data[0] != '\0') {
-	// either we get real data and write it to stdout
+	// either we get real data and write it to stdout/send ack
 		n = write(1, (char *)pdata->data, pdata->size);
 		fflush(stdout);
 
@@ -168,6 +168,7 @@ void* handle_trans(void *arg) {
 	} else {
 		TEST_Z(msk_finalize_connect(trans));
 	}
+
 
 	// malloc write (send) structs to post data read from stdin
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
