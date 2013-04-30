@@ -70,12 +70,13 @@ struct msk_ctx {
 	struct ibv_sge sg_list[0]; 		/**< this is actually an array. note that when you malloc you have to add its size */
 };
 
+#define NB_WORKERS 8
 
 struct msk_internals {
 	unsigned int run_threads;
 	pthread_t cm_thread;		/**< Thread id for connection manager */
 	int cm_epollfd;
-	pthread_t cq_thread;		/**< Thread id for completion queue handler */
+	pthread_t cq_thread[NB_WORKERS];/**< Thread id for completion queue handler */
 	int cq_epollfd;
 	pthread_mutex_t lock;
 };
@@ -107,9 +108,9 @@ void __attribute__ ((destructor)) my_fini(void) {
 			pthread_join(internals->cm_thread, NULL);
 			internals->cm_thread = 0;
 		}
-		if (internals->cq_thread) {
-			pthread_join(internals->cq_thread, NULL);
-			internals->cq_thread = 0;
+		if (internals->cq_thread[0]) {
+			pthread_join(internals->cq_thread[0], NULL);
+			internals->cq_thread[0] = 0;
 		}
 
 		pthread_mutex_destroy(&internals->lock);
@@ -320,9 +321,11 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		pthread_mutex_lock(&trans->lock);
 		trans->state = MSK_CONNECTED;
 
-		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
+		for (i=0; i < NB_WORKERS; i++) {
+		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread[i], msk_cq_thread, trans, &internals->cq_epollfd))) {
 			ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 			break;
+		}
 		}
 		msk_cq_addfd(trans);
 
@@ -454,19 +457,9 @@ static void *msk_cm_thread(void *arg) {
 static int msk_cq_event_handler(msk_trans_t *trans) {
 	struct ibv_wc wc;
 	msk_ctx_t* ctx;
-	int ret, loop;
+	int ret;
 
-	loop = 1;
-
-	while (loop) {
-		pthread_mutex_lock(&trans->lock);
-		ret = ibv_poll_cq(trans->cq, 1, &wc);
-		pthread_mutex_unlock(&trans->lock);
-
-		/* stop the loop on error or if nothing has been read */
-		if (ret <= 0)
-			break;
-
+	while ((ret = ibv_poll_cq(trans->cq, 1, &wc)) > 0) {
 		ret = 0;
 
 		if (trans->bad_recv_wr) {
@@ -543,7 +536,6 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			ret = -EINVAL;
 		}
 
-		ibv_ack_cq_events(trans->cq, 1);
 	}
 
 	return 0;
@@ -559,7 +551,7 @@ static void *msk_cq_thread(void *arg) {
 	struct epoll_event epoll_event;
 	int nfds;
 	void *ev_ctx;
-	int ret;
+	int ret, ntoack;
 
 	while (internals->run_threads > 0) {
 		nfds = epoll_wait(internals->cq_epollfd, &epoll_event, 1, 100);
@@ -573,42 +565,60 @@ static void *msk_cq_thread(void *arg) {
 		}
 
 		trans = (msk_trans_t*)epoll_event.data.ptr;
-		ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
-		if (ret) {
-			ERROR_LOG("ibv_get_cq_event failed, leaving thread.");
-			continue;
-		}
-		if (ev_cq != trans->cq) {
-			ERROR_LOG("Unknown cq, leaving thread.");
-			continue;
-		}
+		epoll_event.events = EPOLLET | EPOLLONESHOT | EPOLLIN;
+		ntoack = 0;
+		pthread_mutex_lock(&trans->cq_lock);
+		while (1) {
+			ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
+			if (ret == -1 && errno == EAGAIN) {
+				ret = 0;
+				break;
+			}
+			if (ret) {
+				ret=errno;
+				ERROR_LOG("ibv_get_cq_event failed: %s (%d)", strerror(ret), ret);
+				continue;
+			}
+			ntoack++;
 
-		ret = ibv_req_notify_cq(trans->cq, 0);
-		if (ret) {
-			ERROR_LOG("ibv_req_notify_cq failed: %d. Leaving thread.", ret);
-			continue;
-		}
+			if (ev_cq != trans->cq) {
+				ERROR_LOG("Unknown cq ?");
+				continue;
+			}
+			ret = ibv_req_notify_cq(trans->cq, 0);
+			if (ret) {
+				ERROR_LOG("ibv_req_notify_cq failed: %d", ret);
+				continue;
+			}
 
-		ret = msk_cq_event_handler(trans);
-		if (ret == 0) {
+			ret = msk_cq_event_handler(trans);
+		}
+		if (ntoack != 0)
+			ibv_ack_cq_events(trans->cq, ntoack);
+
+		/* Only reactivate fd if there is no error */
+		if (!ret) {
 			ret = epoll_ctl(internals->cq_epollfd, EPOLL_CTL_MOD, trans->comp_channel->fd, &epoll_event);
 			if (ret == -1) {
 				ret = errno;
 				ERROR_LOG("Could not re-activate epoll for trans %p: %s (%d)", trans, strerror(ret), ret);
+				pthread_mutex_unlock(&trans->cq_lock);
 				continue;
 			}
+
 			/* double check nothing came since we got there */
 			ret = msk_cq_event_handler(trans);
 		}
+		pthread_mutex_unlock(&trans->cq_lock);
+
 		if (ret) {
 			if (trans->state != MSK_CLOSED) {
 				ERROR_LOG("something went wrong with our cq_event_handler (%d)", -ret);
 				pthread_mutex_lock(&trans->lock);
 				trans->state = MSK_ERROR;
-				pthread_cond_signal(&trans->cond);
+				pthread_cond_broadcast(&trans->cond);
 				pthread_mutex_unlock(&trans->lock);
 			}
-			continue;
 		}
 	}
 
@@ -707,9 +717,9 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 				pthread_join(internals->cm_thread, NULL);
 				internals->cm_thread = 0;
 			}
-			if (internals->cq_thread) {
-				pthread_join(internals->cq_thread, NULL);
-				internals->cq_thread = 0;
+			if (internals->cq_thread[0]) {
+				pthread_join(internals->cq_thread[0], NULL);
+				internals->cq_thread[0] = 0;
 			}
 		}
 		pthread_mutex_unlock(&internals->lock);
@@ -789,6 +799,12 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		trans->pd = attr->pd;
 
 	ret = pthread_mutex_init(&trans->lock, NULL);
+	if (ret) {
+		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+		msk_destroy_trans(&trans);
+		return ret;
+	}
+	ret = pthread_mutex_init(&trans->cq_lock, NULL);
 	if (ret) {
 		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
