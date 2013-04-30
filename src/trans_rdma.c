@@ -233,7 +233,7 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 
 		if ((ret = msk_create_thread(thrid, start_routine, arg))) {
 			ERROR_LOG("Could not create thread: %s (%d)", strerror(ret), ret);
-			internals->cq_thread = 0;
+			*thrid = 0;
 			goto out;
 		}
 	}
@@ -285,6 +285,7 @@ static inline int msk_cm_addfd(msk_trans_t *trans){
  *
  */
 static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event *event) {
+	int i;
 	int ret = 0;
 	msk_trans_t *trans = cm_id->context;
 
@@ -332,7 +333,6 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	case RDMA_CM_EVENT_CONNECT_REQUEST:
 		INFO_LOG("CONNECT_REQUEST");
 		//even if the cm_id is new, trans is the good parent's trans.
-		int i = 0;
 		pthread_mutex_lock(&trans->lock);
 
 		//FIXME don't run through this stupidely and remember last index written to and last index read, i.e. use as a queue
