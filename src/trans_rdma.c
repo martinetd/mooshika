@@ -74,6 +74,12 @@ struct msk_ctx {
 	struct ibv_sge sg_list[0]; 		/**< this is actually an array. note that when you malloc you have to add its size */
 };
 
+enum msk_lock_flag {
+	MSK_NO_LOCK_FLAG = 0,
+	MSK_HAS_TRANS_LOCK = 1,
+	MSK_HAS_POOL_LOCK = 1 << 2
+};
+
 struct msk_worker_data {
 	msk_trans_t *trans;
 	struct msk_ctx *ctx;
@@ -427,14 +433,25 @@ static int msk_kill_worker_threads() {
 }
 
 
-static int msk_signal_worker_locked(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
+static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
 	struct msk_worker_data *wd;
 
 	INFO_LOG("signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
 
+
+	if (flag & MSK_HAS_TRANS_LOCK)
+		ctx->used = MSK_CTX_PROCESSING;
+
+	if (! (flag & MSK_HAS_POOL_LOCK))
+		pthread_mutex_lock(&internals->worker_pool.lock);
+
 	while (internals->worker_pool.q_count == internals->worker_pool.q_size
 	    && internals->run_threads > 0) {
+		if (flag & MSK_HAS_TRANS_LOCK)
+			pthread_mutex_unlock(&trans->lock);
 		pthread_cond_wait(&internals->worker_pool.reverse_cond, &internals->worker_pool.lock);
+		if (flag & MSK_HAS_TRANS_LOCK)
+			pthread_mutex_lock(&trans->lock);
 	}
 
 	do {
@@ -458,21 +475,11 @@ static int msk_signal_worker_locked(msk_trans_t *trans, struct msk_ctx *ctx, enu
 		pthread_cond_signal(&internals->worker_pool.cond);
 	} while (0);
 
+	if (! (flag & MSK_HAS_POOL_LOCK))
+		pthread_mutex_unlock(&internals->worker_pool.lock);
+
 	return 0;
 }
-
-/* Should be called with trans->lock but without pool->lock */
-static inline int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
-	int ret;
-	ctx->used = MSK_CTX_PROCESSING;
-	pthread_mutex_unlock(&trans->lock);
-	pthread_mutex_lock(&internals->worker_pool.lock);
-	ret = msk_signal_worker_locked(trans, ctx, status, opcode);
-	pthread_mutex_unlock(&internals->worker_pool.lock);
-	pthread_mutex_lock(&trans->lock);
-	return ret;
-}
-
 
 
 /**
@@ -762,7 +769,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 		}
 		if (wc.status) {
 			ctx = (msk_ctx_t *)wc.wr_id;
-			msk_signal_worker(trans, ctx, wc.status, wc.opcode);
+			msk_signal_worker(trans, ctx, wc.status, wc.opcode, MSK_HAS_TRANS_LOCK);
 
 			if (trans->state != MSK_CLOSED) {
 				ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
@@ -779,7 +786,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			INFO_LOG("WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc.opcode);
 
 			ctx = (msk_ctx_t *)wc.wr_id;
-			msk_signal_worker(trans, ctx, wc.status, wc.opcode);
+			msk_signal_worker(trans, ctx, wc.status, wc.opcode, MSK_HAS_TRANS_LOCK);
 			break;
 
 		case IBV_WC_RECV:
@@ -804,7 +811,7 @@ static int msk_cq_event_handler(msk_trans_t *trans) {
 			if (pdata)
 				pdata->size = len;
 
-			msk_signal_worker(trans, ctx, wc.status, wc.opcode);
+			msk_signal_worker(trans, ctx, wc.status, wc.opcode, MSK_HAS_TRANS_LOCK);
 			break;
 
 		default:
@@ -903,9 +910,7 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING) {
 			ctx->used = MSK_CTX_PROCESSING;
-			pthread_mutex_unlock(&trans->lock);
-			msk_signal_worker_locked(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV);
-			pthread_mutex_lock(&trans->lock);
+			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV, MSK_HAS_TRANS_LOCK | MSK_HAS_POOL_LOCK);
 		}
 
 	for (i = 0, ctx = (msk_ctx_t *)trans->send_buf;
@@ -913,9 +918,7 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING) {
 			ctx->used = MSK_CTX_PROCESSING;
-			pthread_mutex_unlock(&trans->lock);
-			msk_signal_worker_locked(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND);
-			pthread_mutex_lock(&trans->lock);
+			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND, MSK_HAS_TRANS_LOCK | MSK_HAS_POOL_LOCK);
 		}
 
 
