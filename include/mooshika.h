@@ -107,6 +107,8 @@ struct msk_trans_attr {
 	int max_send_sge;		/**< Maximum number of s/g elements per send */
 	int rq_depth;			/**< The depth of the Receive Queue. */
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
+	int worker_count;		/**< Number of worker threads - works only for the first init */
+	int worker_queue_size;		/**< Size of the worker data queue - works only for the first init */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	struct ibv_pd *pd;		/**< Protection Domain pointer */
 };
