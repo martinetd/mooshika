@@ -93,8 +93,10 @@ struct msk_trans {
 	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
 	msk_ctx_t *send_buf;		/**< pointer to actual context data */
 	msk_ctx_t *recv_buf;		/**< pointer to actual context data */
-	pthread_mutex_t lock;		/**< lock for events */
-	pthread_cond_t cond;		/**< cond for events */
+	pthread_mutex_t ctx_lock;	/**< lock for contexts */
+	pthread_cond_t ctx_cond;	/**< cond for contexts */
+	pthread_mutex_t cm_lock;	/**< lock for connection events */
+	pthread_cond_t cm_cond;		/**< cond for connection events */
 	struct ibv_recv_wr *bad_recv_wr;
 	struct ibv_send_wr *bad_send_wr;
 };
