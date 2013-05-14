@@ -1089,90 +1089,91 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		return EINVAL;
 	}
 
-	*ptrans = malloc(sizeof(msk_trans_t));
-	if (!*ptrans) {
+	trans = malloc(sizeof(msk_trans_t));
+	if (!trans) {
 		ERROR_LOG("Out of memory");
 		return ENOMEM;
 	}
 
-	trans=*ptrans;
+	do {
+		memset(trans, 0, sizeof(msk_trans_t));
 
-	memset(trans, 0, sizeof(msk_trans_t));
+		trans->event_channel = rdma_create_event_channel();
+		if (!trans->event_channel) {
+			ret = errno;
+			ERROR_LOG("create_event_channel failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
 
-	trans->event_channel = rdma_create_event_channel();
-	if (!trans->event_channel) {
-		ret = errno;
-		ERROR_LOG("create_event_channel failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return ret;
-	}
+		ret = rdma_create_id(trans->event_channel, &trans->cm_id, trans, RDMA_PS_TCP);
+		if (ret) {
+			ret = errno;
+			ERROR_LOG("create_id failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
 
-	ret = rdma_create_id(trans->event_channel, &trans->cm_id, trans, RDMA_PS_TCP);
+		trans->state = MSK_INIT;
+
+		if (!attr->addr.sa_stor.ss_family) { //FIXME: do a proper check?
+			ERROR_LOG("address has to be defined");
+			ret = EDESTADDRREQ;
+			break;
+		}
+		trans->addr.sa_stor = attr->addr.sa_stor;
+
+		trans->server = attr->server;
+		trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
+		trans->sq_depth = attr->sq_depth ? attr->sq_depth : 50;
+		trans->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
+		trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
+		trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
+		trans->disconnect_callback = attr->disconnect_callback;
+
+		if (attr->pd)
+			trans->pd = attr->pd;
+
+		ret = pthread_mutex_init(&trans->cm_lock, NULL);
+		if (ret) {
+			ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+		ret = pthread_cond_init(&trans->cm_cond, NULL);
+		if (ret) {
+			ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+		ret = pthread_mutex_init(&trans->ctx_lock, NULL);
+		if (ret) {
+			ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+		ret = pthread_cond_init(&trans->ctx_cond, NULL);
+		if (ret) {
+			ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+
+		pthread_mutex_lock(&internals->lock);
+		if (internals->run_threads == 0) {
+			internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : (attr->server ? 3 : 1);
+			internals->worker_pool.q_size = attr->worker_queue_size ? attr->worker_queue_size : 20;
+		}
+		internals->run_threads++;
+		pthread_mutex_unlock(&internals->lock);
+		ret = msk_spawn_worker_threads();
+
+		if (ret) {
+			ERROR_LOG("Could not start worker threads: %s (%d)", strerror(ret), ret);
+			break;
+		}
+	} while (0);
+
 	if (ret) {
-		ret = errno;
-		ERROR_LOG("create_id failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
 		return ret;
 	}
 
-	trans->state = MSK_INIT;
-
-	if (!attr->addr.sa_stor.ss_family) { //FIXME: do a proper check?
-		ERROR_LOG("address has to be defined");
-		return EDESTADDRREQ;
-	}
-	trans->addr.sa_stor = attr->addr.sa_stor;
-
-	trans->server = attr->server;
-	trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
-	trans->sq_depth = attr->sq_depth ? attr->sq_depth : 50;
-	trans->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
-	trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
-	trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
-	trans->disconnect_callback = attr->disconnect_callback;
-
-	if (attr->pd)
-		trans->pd = attr->pd;
-
-	ret = pthread_mutex_init(&trans->cm_lock, NULL);
-	if (ret) {
-		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return ret;
-	}
-	ret = pthread_cond_init(&trans->cm_cond, NULL);
-	if (ret) {
-		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return ret;
-	}
-	ret = pthread_mutex_init(&trans->ctx_lock, NULL);
-	if (ret) {
-		ERROR_LOG("pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return ret;
-	}
-	ret = pthread_cond_init(&trans->ctx_cond, NULL);
-	if (ret) {
-		ERROR_LOG("pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return ret;
-	}
-
-	pthread_mutex_lock(&internals->lock);
-	if (internals->run_threads == 0) {
-		internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : (attr->server ? 3 : 1);
-		internals->worker_pool.q_size = attr->worker_queue_size ? attr->worker_queue_size : 20;
-	}
-	internals->run_threads++;
-	pthread_mutex_unlock(&internals->lock);
-	ret = msk_spawn_worker_threads();
-
-	if (ret) {
-		ERROR_LOG("Could not start worker threads: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return ret;
-	}
+	*ptrans = trans;
 
 	return 0;
 }
