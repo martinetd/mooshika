@@ -572,7 +572,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		INFO_LOG("ADDR_RESOLVED");
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ADDR_RESOLVED;
-		pthread_cond_signal(&trans->cm_cond);
+		pthread_cond_broadcast(&trans->cm_cond);
 		pthread_mutex_unlock(&trans->cm_lock);
 		break;
 
@@ -580,22 +580,22 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		INFO_LOG("ROUTE_RESOLVED");
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ROUTE_RESOLVED;
-		pthread_cond_signal(&trans->cm_cond);
+		pthread_cond_broadcast(&trans->cm_cond);
 		pthread_mutex_unlock(&trans->cm_lock);
 		break;
 
 	case RDMA_CM_EVENT_ESTABLISHED:
 		INFO_LOG("ESTABLISHED");
 		pthread_mutex_lock(&trans->cm_lock);
-		trans->state = MSK_CONNECTED;
-
 		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
 			ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
-			break;
+			trans->state = MSK_ERROR;
+		} else {
+			trans->state = MSK_CONNECTED;
+			msk_cq_addfd(trans);
 		}
-		msk_cq_addfd(trans);
 
-		pthread_cond_signal(&trans->cm_cond);
+		pthread_cond_broadcast(&trans->cm_cond);
 		pthread_mutex_unlock(&trans->cm_lock);
 		break;
 
@@ -633,7 +633,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 			rdma_event_str(event->event), event->status);
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ERROR;
-		pthread_cond_signal(&trans->cm_cond);
+		pthread_cond_broadcast(&trans->cm_cond);
 		pthread_mutex_unlock(&trans->cm_lock);
 		break;
 
@@ -648,6 +648,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_CLOSED;
+		pthread_cond_broadcast(&trans->cm_cond);
 		pthread_mutex_unlock(&trans->cm_lock);
 
 		if (trans->disconnect_callback)
@@ -869,6 +870,7 @@ static void *msk_cq_thread(void *arg) {
 			pthread_mutex_lock(&trans->cm_lock);
 			if (trans->state == MSK_CLOSED || trans->state == MSK_ERROR) {
 				// closing trans, skip this, will be done on flush
+				pthread_mutex_unlock(&trans->cm_lock);
 				continue;
 			}
 
@@ -876,7 +878,7 @@ static void *msk_cq_thread(void *arg) {
 			if (ret) {
 				if (trans->state != MSK_CLOSED) {
 					ERROR_LOG("something went wrong with our cq_event_handler");
-					trans->state = MSK_ERROR;
+					trans->state = MSK_CLOSED;
 					pthread_cond_broadcast(&trans->cm_cond);
 				}
 			}
@@ -1429,6 +1431,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
 	pthread_mutex_lock(&trans->cm_lock);
 	ret = rdma_accept(trans->cm_id, &conn_param);
 	if (ret) {
+		pthread_mutex_unlock(&trans->cm_lock);
 		ret = errno;
 		ERROR_LOG("rdma_accept failed: %s (%d)", strerror(ret), ret);
 		return ret;
@@ -1579,26 +1582,29 @@ int msk_finalize_connect(msk_trans_t *trans) {
 
 	pthread_mutex_lock(&trans->cm_lock);
 
-	ret = rdma_connect(trans->cm_id, &conn_param);
-	if (ret) {
-		ret = errno;
-		ERROR_LOG("rdma_connect failed: %s (%d)", strerror(ret), ret);
-		return ret;
-	}
+	do {
+		ret = rdma_connect(trans->cm_id, &conn_param);
+		if (ret) {
+			ret = errno;
+			ERROR_LOG("rdma_connect failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
 
-	while (trans->state == MSK_ROUTE_RESOLVED) {
-		pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-		INFO_LOG("Got a cond, state: %i", trans->state);
-	}
+		while (trans->state == MSK_ROUTE_RESOLVED) {
+			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			INFO_LOG("Got a cond, state: %i", trans->state);
+		}
+
+		if (trans->state != MSK_CONNECTED) {
+			ERROR_LOG("Connection failed");
+			ret = ECONNREFUSED;
+			break;
+		}
+	} while (0);
 
 	pthread_mutex_unlock(&trans->cm_lock);
 
-	if (trans->state != MSK_CONNECTED) {
-		ERROR_LOG("Connection failed");
-		return ECONNREFUSED;
-	}
-
-	return 0;
+	return ret;
 }
 
 /**
