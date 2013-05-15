@@ -177,7 +177,11 @@ int msk_init(msk_trans_t **trans, msk_trans_attr_t *attr);
 
 // server specific:
 int msk_bind_server(msk_trans_t *trans);
-msk_trans_t *msk_accept_one(msk_trans_t *trans);
+msk_trans_t *msk_accept_one_wait(msk_trans_t *trans, int msleep);
+msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *abstime);
+static inline msk_trans_t *msk_accept_one(msk_trans_t *trans) {
+	return msk_accept_one_timedwait(trans, NULL);
+}
 int msk_finalize_accept(msk_trans_t *trans);
 void msk_destroy_trans(msk_trans_t **ptrans);
 

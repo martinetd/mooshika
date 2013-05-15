@@ -44,6 +44,7 @@
 #include <sys/types.h>	//open
 #include <sys/stat.h>	//open
 #include <fcntl.h>	//open
+#include <signal.h>
 
 #include <pcap.h>
 #include <linux/if_arp.h>
@@ -76,12 +77,16 @@ struct privatedata {
 	pthread_cond_t *pcond;
 };
 
+static int run_threads = 1;
+
+void sigHandler(int s) {
+	run_threads = 0;
+}
+
 void callback_recv(msk_trans_t *, msk_data_t *, void*);
 
 void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
-	ERROR_LOG("error callback");
 }
-
 
 void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	struct datalock *datalock = arg;
@@ -151,61 +156,175 @@ void print_help(char **argv) {
 
 void* flush_thread(void *arg) {
 	pcap_dumper_t **p_pcap_dumper = arg;
+	/* keep this value for close or race between check in while and dump_flush */
+	pcap_dumper_t *pcap_dumper = *p_pcap_dumper;
 
 	while (*p_pcap_dumper) {
+		pcap_dump_flush(pcap_dumper);
 		sleep(1);
-		pcap_dump_flush(*p_pcap_dumper);
 	}
+
+	pcap_dump_close(pcap_dumper);
 
 	pthread_exit(NULL);
 }
 
-void* handle_trans(void *arg) {
-	msk_trans_t *trans = arg;
-	struct privatedata *priv;
-	msk_trans_t *o_trans;
+void *setup_thread(void *arg){
+	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
+	const size_t mr_size = 2*(RECV_NUM+1)*(CHUNK_SIZE+PACKET_HDR_LEN)*sizeof(char);
+	msk_data_t *data;
+	struct datalock *datalock;
+	struct pkt_hdr pkt_hdr;
 	int i;
+	struct privatedata *s_priv, *c_priv;
+	msk_trans_t *child_trans, *c_trans;
+	pcap_dumper_t *pcap_dumper;
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
 
-	TEST_NZ(priv = trans->private_data);
-	TEST_NZ(o_trans = priv->o_trans);
-	TEST_NZ(mr = priv->mr);
+	TEST_NZ(child_trans = arg);
+	TEST_NZ(c_trans = child_trans->private_data);
+	TEST_NZ(pcap_dumper = c_trans->private_data);
 
-	for (i=0; i<RECV_NUM; i++)
-		TEST_Z(msk_post_recv(trans, (&priv->first_datalock[i])->data, mr, callback_recv, callback_error, &priv->first_datalock[i]));
+	TEST_Z(msk_connect(c_trans));
 
-	printf("%s: done posting recv buffers\n", trans->server ? "server" : "client");
 
-	/* finalize_connect first, finalize_accept second */
-	if (!trans->server) {
-		pthread_mutex_lock(priv->plock);
-		TEST_Z(msk_finalize_connect(trans));
-		pthread_cond_signal(priv->pcond);
-	} else {
-		pthread_cond_wait(priv->pcond, priv->plock);
-		TEST_Z(msk_finalize_accept(trans));
+	// set up data_t elements and mr (needs to be common for both as well)
+	TEST_NZ(rdmabuf = malloc(mr_size));
+	memset(rdmabuf, 0, mr_size);
+	//FIXME that's not possible, can only reg it once -- need to use the same pd for both trans
+	TEST_NZ(mr = msk_reg_mr(c_trans, rdmabuf, mr_size, IBV_ACCESS_LOCAL_WRITE));
+
+
+
+	TEST_NZ(data = malloc(2*RECV_NUM*sizeof(msk_data_t)));
+	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
+
+	memset(&pkt_hdr, 0, sizeof(pkt_hdr));
+
+	pkt_hdr.ipv6.ip_flags[0] = 0x60; /* 6 in the leftmosts 4 bits */
+	pkt_hdr.ipv6.ip_nh = IPPROTO_TCP;
+	pkt_hdr.ipv6.ip_hl = 1;
+	/** @todo: add options, use one of :
+			CLIENT
+		child_trans->cm_id->route.addr.dst_sin
+		child_trans->cm_id->route.addr.src_sin
+			RMITM
+		c_trans->cm_id->route.addr.src_sin
+		c_trans->cm_id->route.addr.dst_sin
+			SERVER
+	*/
+	pkt_hdr.ipv6.ip_src.s6_addr16[4] = 0xffff;
+	pkt_hdr.ipv6.ip_src.s6_addr16[5] = 0x0000;
+	pkt_hdr.ipv6.ip_src.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
+	pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.src_sin.sin_port;
+
+	pkt_hdr.ipv6.ip_dst.s6_addr16[4] = 0xffff;
+	pkt_hdr.ipv6.ip_dst.s6_addr16[5] = 0x0000;
+	pkt_hdr.ipv6.ip_dst.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
+	pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.dst_sin.sin_port;
+
+	pkt_hdr.tcp.th_data_off = INT8_C(sizeof(struct tcp_hdr) * 4); /* *4 because words of 2 bits? it's odd. */
+	pkt_hdr.tcp.th_window = htons(100);
+	pkt_hdr.tcp.th_flags = THF_ACK;
+
+	for (i=0; i < 2*RECV_NUM; i++) {
+		if (i == RECV_NUM) { // change packet direction
+			pkt_hdr.ipv6.ip_src.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
+			pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.dst_sin.sin_port;
+			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
+			pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.src_sin.sin_port;
+		}
+		memcpy(rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
+		data[i].data=rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN)+PACKET_HDR_LEN;
+		data[i].max_size=CHUNK_SIZE;
+		datalock[i].data = &data[i];
+		pthread_mutex_init(&datalock[i].lock, NULL);
 	}
 
+	// set up the data needed to communicate
+	TEST_NZ(child_trans->private_data = malloc(sizeof(struct privatedata)));
+	TEST_NZ(c_trans->private_data = malloc(sizeof(struct privatedata)));
+	s_priv = child_trans->private_data;
+	c_priv = c_trans->private_data;
+
+
+	s_priv->pcap_dumper = pcap_dumper;
+	c_priv->pcap_dumper = s_priv->pcap_dumper;
+
+	c_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
+	s_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
+
+	s_priv->o_trans = c_trans;
+	c_priv->o_trans = child_trans;
+
+	s_priv->first_datalock = datalock;
+	s_priv->mr             = mr;
+	c_priv->first_datalock = datalock + RECV_NUM;
+	c_priv->mr             = mr;
+	pthread_mutex_init(&lock, NULL);
+	pthread_cond_init(&cond, NULL);
+	c_priv->plock = &lock;
+	s_priv->plock = &lock;
+	s_priv->pcond = &cond;
+	c_priv->pcond = &cond;
+
+
+	for (i=0; i<RECV_NUM; i++) {
+		TEST_Z(msk_post_recv(c_trans, (&c_priv->first_datalock[i])->data, mr, callback_recv, callback_error, &c_priv->first_datalock[i]));
+		TEST_Z(msk_post_recv(child_trans, (&s_priv->first_datalock[i])->data, mr, callback_recv, callback_error, &s_priv->first_datalock[i]));
+	}
+
+	pthread_mutex_lock(&lock);
+
+	/* finalize_connect first, finalize_accept second */
+	TEST_Z(msk_finalize_connect(c_trans));
+	TEST_Z(msk_finalize_accept(child_trans));
+
+	printf("New connection setup\n");
 
 	/* Wait till either connection has a disconnect callback */
-	pthread_cond_wait(priv->pcond, priv->plock);
-	pthread_mutex_unlock(priv->plock);
+	pthread_cond_wait(&cond, &lock);
+	pthread_mutex_unlock(&lock);
 
-	msk_destroy_trans(&trans);
+	msk_destroy_trans(&c_trans);
+	msk_destroy_trans(&child_trans);
+
+	pthread_cond_destroy(&cond);
+	pthread_mutex_destroy(&lock);
+	free(c_priv);
+	free(s_priv);
+	free(datalock);
+	free(data);
+	free(rdmabuf);
 
 	pthread_exit(NULL);
 }
 
 int main(int argc, char **argv) {
-
-	struct hostent *host;
-
 	msk_trans_t *s_trans;
 	msk_trans_t *child_trans;
 	msk_trans_t *c_trans;
-
 	msk_trans_attr_t s_attr;
 	msk_trans_attr_t c_attr;
+
+	pthread_t thrid, flushthrid;
+
+	pcap_t *pcap;
+	pcap_dumper_t *pcap_dumper;
+
+	// argument handling
+	int option_index = 0;
+	int op, last_op;
+	struct hostent *host;
+	static struct option long_options[] = {
+		{ "client",	required_argument,	0,		'c' },
+		{ "server",	required_argument,	0,		's' },
+		{ "help",	no_argument,		0,		'h' },
+		{ 0,		0,			0,		 0  }
+	};
+
 
 	memset(&s_attr, 0, sizeof(msk_trans_attr_t));
 	memset(&c_attr, 0, sizeof(msk_trans_attr_t));
@@ -224,16 +343,6 @@ int main(int argc, char **argv) {
 	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
 
-	// argument handling
-	static struct option long_options[] = {
-		{ "client",	required_argument,	0,		'c' },
-		{ "server",	required_argument,	0,		's' },
-		{ "help",	no_argument,		0,		'h' },
-		{ 0,		0,			0,		 0  }
-	};
-
-	int option_index = 0;
-	int op, last_op;
 	last_op = 0;
 	while ((op = getopt_long(argc, argv, "-@hvs:S:c:", long_options, &option_index)) != -1) {
 		switch(op) {
@@ -300,139 +409,35 @@ int main(int argc, char **argv) {
 		exit(-1);
 
 	TEST_Z(msk_bind_server(s_trans));
-	child_trans = msk_accept_one(s_trans);
-	
-	// got a client, start our own client before we finalize the server's connection
 
-	c_attr.pd = child_trans->pd;
+	pcap = pcap_open_dead(DLT_RAW, PACKET_HARD_MAX_LEN);
+	pcap_dumper = pcap_dump_open(pcap, "/tmp/rmitm.pcap");
+	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &pcap_dumper));
 
-	TEST_Z(msk_init(&c_trans, &c_attr));
+	signal(SIGINT, sigHandler);
 
-	if (!c_trans)
-		exit(-1);
+	while (run_threads) {
+		child_trans = msk_accept_one_wait(s_trans, 100);
 
-	TEST_Z(msk_connect(c_trans));
+		if (child_trans == NULL)
+			continue;
 
-
-	// set up data_t elements and mr (needs to be common for both as well)
-
-	uint8_t *rdmabuf;
-	struct ibv_mr *mr;
-
-	const size_t mr_size = 2*(RECV_NUM+1)*(CHUNK_SIZE+PACKET_HDR_LEN)*sizeof(char);
-
-	TEST_NZ(rdmabuf = malloc(mr_size));
-	memset(rdmabuf, 0, mr_size);
-	//FIXME that's not possible, can only reg it once -- need to use the same pd for both trans
-	TEST_NZ(mr = msk_reg_mr(c_trans, rdmabuf, mr_size, IBV_ACCESS_LOCAL_WRITE));
-
-
-	msk_data_t *data;
-	struct datalock *datalock;
-	int i;
-
-	TEST_NZ(data = malloc(2*RECV_NUM*sizeof(msk_data_t)));
-	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
-
-	struct pkt_hdr pkt_hdr;
-
-	memset(&pkt_hdr, 0, sizeof(pkt_hdr));
-
-	pkt_hdr.ipv6.ip_flags[0] = 0x60; /* 6 in the leftmosts 4 bits */
-	pkt_hdr.ipv6.ip_nh = IPPROTO_TCP;
-	pkt_hdr.ipv6.ip_hl = 1;
-	/** @todo: add options, use one of :
-			CLIENT
-		child_trans->cm_id->route.addr.dst_sin
-		child_trans->cm_id->route.addr.src_sin
-			RMITM
-		c_trans->cm_id->route.addr.src_sin
-		c_trans->cm_id->route.addr.dst_sin
-			SERVER
-	*/
-	pkt_hdr.ipv6.ip_src.s6_addr16[4] = 0xffff;
-	pkt_hdr.ipv6.ip_src.s6_addr16[5] = 0x0000;
-	pkt_hdr.ipv6.ip_src.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-	pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.src_sin.sin_port;
-
-	pkt_hdr.ipv6.ip_dst.s6_addr16[4] = 0xffff;
-	pkt_hdr.ipv6.ip_dst.s6_addr16[5] = 0x0000;
-	pkt_hdr.ipv6.ip_dst.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-	pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.dst_sin.sin_port;
-
-	pkt_hdr.tcp.th_data_off = INT8_C(sizeof(struct tcp_hdr) * 4); /* *4 because words of 2 bits? it's odd. */
-	pkt_hdr.tcp.th_window = htons(100);
-	pkt_hdr.tcp.th_flags = THF_ACK;
-
-	for (i=0; i < 2*RECV_NUM; i++) {
-		if (i == RECV_NUM) { // change packet direction
-			pkt_hdr.ipv6.ip_src.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-			pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.dst_sin.sin_port;
-			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-			pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.src_sin.sin_port;
+		// got a client, start our own client before we finalize the server's connection
+		c_attr.pd = child_trans->pd;
+		TEST_Z(msk_init(&c_trans, &c_attr));
+		if (!c_trans) {
+			ERROR_LOG("Couldn't connect to remote endpoint, aborting");
+			break;
 		}
-		memcpy(rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
-		data[i].data=rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN)+PACKET_HDR_LEN;
-		data[i].max_size=CHUNK_SIZE;
-		datalock[i].data = &data[i];
-		pthread_mutex_init(&datalock[i].lock, NULL);
+
+		// ugly hack to have all the arguments we need given...
+		child_trans->private_data = c_trans;
+		c_trans->private_data = pcap_dumper;
+		TEST_Z(pthread_create(&thrid, NULL, setup_thread, child_trans));
 	}
 
-	// set up the data needed to communicate
-	TEST_NZ(child_trans->private_data = malloc(sizeof(struct privatedata)));
-	TEST_NZ(c_trans->private_data = malloc(sizeof(struct privatedata)));
-	struct privatedata *s_priv, *c_priv;
-	s_priv = child_trans->private_data;
-	c_priv = c_trans->private_data;
-
-
-	pcap_t *pcap = pcap_open_dead(DLT_RAW, PACKET_HARD_MAX_LEN);
-	s_priv->pcap_dumper = pcap_dump_open(pcap, "/tmp/rmitm.pcap");
-	c_priv->pcap_dumper = s_priv->pcap_dumper;
-
-	c_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
-	s_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
-
-	s_priv->o_trans = c_trans;
-	c_priv->o_trans = child_trans;
-
-	s_priv->first_datalock = datalock;
-	s_priv->mr             = mr;
-	c_priv->first_datalock = datalock + RECV_NUM;
-	c_priv->mr             = mr;
-	pthread_mutex_t lock;
-	pthread_cond_t cond;
-	pthread_mutex_init(&lock, NULL);
-	pthread_cond_init(&cond, NULL);
-	c_priv->plock = &lock;
-	s_priv->plock = &lock;
-	s_priv->pcond = &cond;
-	c_priv->pcond = &cond;
-
-
-	pthread_t s_threadid, c_threadid, flushthrid;
-	pthread_mutex_lock(c_priv->plock);
-	pthread_create(&s_threadid, NULL, handle_trans, child_trans);
-	pthread_create(&c_threadid, NULL, handle_trans, c_trans);
-	pthread_create(&flushthrid, NULL, flush_thread, &c_priv->pcap_dumper);
-
-	pthread_join(s_threadid, NULL);
-	pthread_join(c_threadid, NULL);
-
-	c_priv->pcap_dumper = NULL;
+	pcap_dumper = NULL;
 	pthread_join(flushthrid, NULL);
-
-	printf("closing stuff!\n");
-
-	pcap_dump_close(s_priv->pcap_dumper);
-
-	pthread_cond_destroy(&cond);
-	pthread_mutex_destroy(&lock);
-	free(c_priv);
-	free(s_priv);
-	free(datalock);
-	free(data);
-	free(rdmabuf);
 
 	msk_destroy_trans(&s_trans);
 

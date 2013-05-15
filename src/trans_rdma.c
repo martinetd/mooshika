@@ -1455,7 +1455,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
  *
  * @return a new trans for the child on success, NULL on failure
  */
-msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int an' use trans as argument
+msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *abstime) { //TODO make it return an int an' use trans as argument
 
 	//TODO: timeout?
 
@@ -1469,7 +1469,8 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 	}
 
 	pthread_mutex_lock(&trans->cm_lock);
-	while (!cm_id) {
+	ret = 0;
+	while (!cm_id && ret == 0) {
 		/* See if one of the slots has been taken */
 		for (i = 0; i < trans->server; i++)
 			if (trans->conn_requests[i])
@@ -1477,13 +1478,23 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 
 		if (i == trans->server) {
 			INFO_LOG("Waiting for a connection to come in");
-			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			if (abstime)
+				ret = pthread_cond_timedwait(&trans->cm_cond, &trans->cm_lock, abstime);
+			else
+				ret = pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
 		} else {
 			cm_id = trans->conn_requests[i];
 			trans->conn_requests[i] = NULL;
 		}
 	}
 	pthread_mutex_unlock(&trans->cm_lock);
+
+	if (ret == ETIMEDOUT) {
+		return NULL;
+	}
+	if (ret) {
+		return NULL;
+	}
 
 	INFO_LOG("Got a connection request - creating child");
 
@@ -1502,6 +1513,18 @@ msk_trans_t *msk_accept_one(msk_trans_t *trans) { //TODO make it return an int a
 		}
 	}
 	return child_trans;
+}
+
+msk_trans_t *msk_accept_one_wait(msk_trans_t *trans, int msleep) {
+	struct timespec ts;
+
+	if (msleep == 0)
+		return msk_accept_one(trans);
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+	ts.tv_sec += msleep / 1000;
+	ts.tv_nsec += (msleep % 1000) * 1000000;
+	return msk_accept_one_timedwait(trans, &ts);
 }
 
 /**
