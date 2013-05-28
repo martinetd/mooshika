@@ -42,14 +42,14 @@
 #include <errno.h>
 #include <poll.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 
-#define CHUNK_SIZE 8*1024
+#define DEFAULT_BLOCK_SIZE 1024*1024
 #define RECV_NUM 1
 
-#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
-#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
+#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); }} while (0)
+#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); }} while (0)
 
 struct cb_arg {
 	struct ibv_mr *mr;
@@ -58,8 +58,12 @@ struct cb_arg {
 	pthread_cond_t *cond;
 };
 
-void callback_send(msk_trans_t *trans, void *arg) {
+struct thread_arg {
+	int mt_server;
+	uint32_t block_size;
+};
 
+void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 void callback_disconnect(msk_trans_t *trans) {
@@ -74,7 +78,6 @@ void callback_disconnect(msk_trans_t *trans) {
 
 
 void callback_error(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
-	ERROR_LOG("error callback");
 }
 
 void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -94,11 +97,11 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 		if (n != pdata->size)
 			ERROR_LOG("Wrote less than what was actually received");
 
-		msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg);
-		msk_post_send(trans, cb_arg->ackdata, cb_arg->mr, NULL, NULL, NULL);
+		TEST_Z(msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg));
+		TEST_Z(msk_post_send(trans, cb_arg->ackdata, cb_arg->mr, NULL, NULL, NULL));
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg);
+		TEST_Z(msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg));
 
 		pthread_mutex_lock(cb_arg->lock);
 		pthread_cond_signal(cb_arg->cond);
@@ -107,12 +110,21 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 void print_help(char **argv) {
-	printf("Usage: %s {-s|-c addr}\n", argv[0]);
+	printf("Usage: %s {-s|-c addr} [-p port] [-m] [-v] [-b blocksize]\n", argv[0]);
+	printf("Mandatory argument, either of:\n"
+		"	-c, --client addr: client to connect to\n"
+		"	-s, --server: server mode\n"
+		"	-S addr: server mode, bind to address\n"
+		"Optional arguments:\n"
+		"	-p, --port port: port to use\n"
+		"	-m, --multi: server only, multithread/accept multiple connections\n"
+		"	-v, --verbose: enable verbose output\n"
+		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
 }
 
 void* handle_trans(void *arg) {
 	msk_trans_t *trans = arg;
-	int mt_server = *(int*)trans->private_data;
+	struct thread_arg *thread_arg = trans->private_data;
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 	msk_data_t *wdata;
@@ -129,7 +141,7 @@ void* handle_trans(void *arg) {
 
 
 	// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
-#define RDMABUF_SIZE (RECV_NUM+2)*CHUNK_SIZE
+#define RDMABUF_SIZE (RECV_NUM+2)*thread_arg->block_size
 	TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
 	memset(rdmabuf, 0, RDMABUF_SIZE);
 	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
@@ -137,8 +149,8 @@ void* handle_trans(void *arg) {
 
 	// malloc mooshika's data structs (i.e. max_size+size+pointer to actual data), for ack buffer
 	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)));
-	ackdata->data = rdmabuf+(RECV_NUM+1)*CHUNK_SIZE;
-	ackdata->max_size = CHUNK_SIZE;
+	ackdata->data = rdmabuf+(RECV_NUM+1)*thread_arg->block_size;
+	ackdata->max_size = thread_arg->block_size;
 	ackdata->size = 1;
 	ackdata->data[0] = 0;
 
@@ -151,8 +163,8 @@ void* handle_trans(void *arg) {
 
 	for (i=0; i < RECV_NUM; i++) {
 		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
-		rdata[i]->data=rdmabuf+i*CHUNK_SIZE;
-		rdata[i]->max_size=CHUNK_SIZE;
+		rdata[i]->data=rdmabuf+i*thread_arg->block_size;
+		rdata[i]->max_size=thread_arg->block_size;
 		cb_arg[i].mr = mr;
 		cb_arg[i].ackdata = ackdata;
 		cb_arg[i].lock = &lock;
@@ -172,8 +184,8 @@ void* handle_trans(void *arg) {
 
 	// malloc write (send) structs to post data read from stdin
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
-	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE;
-	wdata->max_size = CHUNK_SIZE;
+	wdata->data = rdmabuf+RECV_NUM*thread_arg->block_size;
+	wdata->max_size = thread_arg->block_size;
 
 	pollfd_stdin.fd = 0; // stdin
 	pollfd_stdin.events = POLLIN | POLLPRI;
@@ -210,7 +222,7 @@ void* handle_trans(void *arg) {
 	free(ackdata);
 	free(rdmabuf);
 
-	if (mt_server)
+	if (thread_arg->mt_server)
 		pthread_exit(NULL);
 	else
 		return NULL;
@@ -223,24 +235,28 @@ int main(int argc, char **argv) {
 
 	msk_trans_attr_t attr;
 
-	int mt_server = 0;
+	struct thread_arg thread_arg;
 
 	struct hostent *host;
 
 	// argument handling
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
-		{ "server",	required_argument,	0,		's' },
+		{ "server",	no_argument,		0,		's' },
 		{ "port",	required_argument,	0,		'p' },
 		{ "help",	no_argument,		0,		'h' },
 		{ "multi",	no_argument,		0,		'm' },
+		{ "verbose",	no_argument,		0,		'v' },
+		{ "block-size",	required_argument,	0,		'b' },
 		{ 0,		0,			0,		 0  }
 	};
 
 	int option_index = 0;
 	int op;
+	char *tmp_s;
 
 	memset(&attr, 0, sizeof(msk_trans_attr_t));
+	memset(&thread_arg, 0, sizeof(struct thread_arg));
 
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
@@ -249,7 +265,7 @@ int main(int argc, char **argv) {
 	attr.addr.sa_in.sin_port = htons(1235);
 	attr.disconnect_callback = callback_disconnect;
 
-	while ((op = getopt_long(argc, argv, "@hvmsS:c:p:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvmsb:S:c:p:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -258,11 +274,23 @@ int main(int argc, char **argv) {
 				printf("Git HEAD = %s\n", _GIT_HEAD_COMMIT ) ;
 				printf("Git Describe = %s\n", _GIT_DESCRIBE ) ;
 				exit(0);
+			case 'b':
+				thread_arg.block_size = strtoul(optarg, &tmp_s, 0);
+				if (errno || thread_arg.block_size == 0) {
+					thread_arg.block_size = 0;
+					ERROR_LOG("Invalid block size, assuming default (%u)", DEFAULT_BLOCK_SIZE);
+					break;
+				}
+				if (tmp_s[0] != 0) {
+					set_size(&thread_arg.block_size, tmp_s);
+				}
+				INFO_LOG(attr.debug, "block size: %u", thread_arg.block_size);
+				break;
 			case 'h':
 				print_help(argv);
 				exit(0);
 			case 'v':
-				ERROR_LOG("verbose switch not ready just yet, come back later!\n");
+				attr.debug = 1;
 				break;
 			case 'c':
 				attr.server = 0;
@@ -284,7 +312,7 @@ int main(int argc, char **argv) {
 				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));
 				break;
 			case 'm':
-				mt_server = 1;
+				thread_arg.mt_server = 1;
 				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
@@ -299,13 +327,20 @@ int main(int argc, char **argv) {
 		exit(EINVAL);
 	}
 
+	if (thread_arg.block_size == 0)
+		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
+
+	// writing to stdout is the limiting factor anyway
+	attr.worker_count = -1;
+	attr.worker_queue_size = 100;
+
 	TEST_Z(msk_init(&trans, &attr));
 
 	if (!trans)
 		exit(-1);
 
 
-	trans->private_data = &mt_server;
+	trans->private_data = &thread_arg;
 
 	if (trans->server) {
 		pthread_t id;
@@ -323,7 +358,7 @@ int main(int argc, char **argv) {
 		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
 			ERROR_LOG("can't set pthread's join state");
 
-		if (mt_server) {
+		if (thread_arg.mt_server) {
 			while (1) {
 				child_trans = msk_accept_one(trans);
 				if (!child_trans) {

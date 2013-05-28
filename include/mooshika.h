@@ -103,6 +103,7 @@ struct msk_trans {
 
 struct msk_trans_attr {
 	disconnect_callback_t disconnect_callback;
+	int debug;			/**< verbose output to stderr if set */
 	int server;			/**< 0 if client, number of connections to accept on server */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */

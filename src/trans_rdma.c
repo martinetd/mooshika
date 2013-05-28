@@ -47,7 +47,7 @@
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 
 
@@ -105,6 +105,7 @@ struct worker_pool {
 
 struct msk_internals {
 	pthread_mutex_t lock;
+	int debug;
 	pthread_t cm_thread;		/**< Thread id for connection manager */
 	pthread_t cq_thread;		/**< Thread id for completion queue handler */
 	unsigned int run_threads;
@@ -274,6 +275,48 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 	return 0;
 }
 
+static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
+	if (status) {
+		if (ctx && ctx->err_callback)
+			ctx->err_callback(trans, ctx->pdata, ctx->callback_arg);
+
+		pthread_mutex_lock(&trans->ctx_lock);
+		ctx->used = MSK_CTX_FREE;
+		pthread_cond_broadcast(&trans->ctx_cond);
+		pthread_mutex_unlock(&trans->ctx_lock);
+		return;
+	}
+
+	switch (opcode) {
+		case IBV_WC_SEND:
+		case IBV_WC_RDMA_WRITE:
+		case IBV_WC_RDMA_READ:
+			if (ctx->callback)
+				ctx->callback(trans, ctx->pdata, ctx->callback_arg);
+
+			pthread_mutex_lock(&trans->ctx_lock);
+			ctx->used = MSK_CTX_FREE;
+			pthread_cond_broadcast(&trans->ctx_cond);
+			pthread_mutex_unlock(&trans->ctx_lock);
+			break;
+
+		case IBV_WC_RECV:
+		case IBV_WC_RECV_RDMA_WITH_IMM:
+			if (ctx->callback)
+				ctx->callback(trans, ctx->pdata, ctx->callback_arg);
+
+			pthread_mutex_lock(&trans->ctx_lock);
+			ctx->used = MSK_CTX_FREE;
+			pthread_cond_broadcast(&trans->ctx_cond);
+			pthread_mutex_unlock(&trans->ctx_lock);
+			break;
+
+		default:
+			ERROR_LOG("worker thread got weird opcode: %d", opcode);
+	}
+	return;
+}
+
 static void* msk_worker_thread(void *arg) {
 	struct worker_pool *pool = arg;
 	struct msk_worker_data wd;
@@ -293,7 +336,7 @@ static void* msk_worker_thread(void *arg) {
 			break;
 		}
 
-		INFO_LOG("thread %lx, depopping wd index %i (tail %i, count %i), trans %p, ctx %p, used %i", pthread_self(), pool->q_head, pool->q_tail, pool->q_count, pool->wd_queue[pool->q_head].trans, pool->wd_queue[pool->q_head].ctx, pool->wd_queue[pool->q_head].ctx->used);
+		INFO_LOG(internals->debug, "thread %lx, depopping wd index %i (tail %i, count %i), trans %p, ctx %p, used %i", pthread_self(), pool->q_head, pool->q_tail, pool->q_count, pool->wd_queue[pool->q_head].trans, pool->wd_queue[pool->q_head].ctx, pool->wd_queue[pool->q_head].ctx->used);
 
 		memcpy(&wd, &pool->wd_queue[pool->q_head], sizeof(struct msk_worker_data));
 
@@ -309,44 +352,7 @@ static void* msk_worker_thread(void *arg) {
 
 		pthread_mutex_unlock(&pool->lock);
 
-		if (wd.status) {
-			if (wd.ctx && wd.ctx->err_callback)
-				wd.ctx->err_callback(wd.trans, wd.ctx->pdata, wd.ctx->callback_arg);
-
-			pthread_mutex_lock(&wd.trans->ctx_lock);
-			wd.ctx->used = MSK_CTX_FREE;
-			pthread_cond_broadcast(&wd.trans->ctx_cond);
-			pthread_mutex_unlock(&wd.trans->ctx_lock);
-
-			continue;
-		}
-		switch (wd.opcode) {
-			case IBV_WC_SEND:
-			case IBV_WC_RDMA_WRITE:
-			case IBV_WC_RDMA_READ:
-				if (wd.ctx->callback)
-					wd.ctx->callback(wd.trans, wd.ctx->pdata, wd.ctx->callback_arg);
-
-				pthread_mutex_lock(&wd.trans->ctx_lock);
-				wd.ctx->used = MSK_CTX_FREE;
-				pthread_cond_broadcast(&wd.trans->ctx_cond);
-				pthread_mutex_unlock(&wd.trans->ctx_lock);
-				break;
-
-			case IBV_WC_RECV:
-			case IBV_WC_RECV_RDMA_WITH_IMM:
-				if (wd.ctx->callback)
-					wd.ctx->callback(wd.trans, wd.ctx->pdata, wd.ctx->callback_arg);
-
-				pthread_mutex_lock(&wd.trans->ctx_lock);
-				wd.ctx->used = MSK_CTX_FREE;
-				pthread_cond_broadcast(&wd.trans->ctx_cond);
-				pthread_mutex_unlock(&wd.trans->ctx_lock);
-				break;
-
-			default:
-				ERROR_LOG("worker thread got weird opcode: %d", wd.opcode);
-		}
+		msk_worker_callback(wd.trans, wd.ctx, wd.status, wd.opcode);
 	}
 
 	pthread_exit(NULL);
@@ -358,7 +364,7 @@ static int msk_spawn_worker_threads() {
 
 	pthread_mutex_lock(&internals->lock);
 	do {
-		if (internals->worker_pool.thrids != NULL) {
+		if (internals->worker_pool.thrids != NULL || internals->worker_pool.worker_count == -1) {
 			break;
 		}
 
@@ -411,7 +417,7 @@ static int msk_spawn_worker_threads() {
 static int msk_kill_worker_threads() {
 	int i;
 
-	if (internals->worker_pool.thrids == NULL) {
+	if (internals->worker_pool.thrids == NULL || internals->worker_pool.worker_count == -1) {
 		return 0;
 	}
 
@@ -439,7 +445,17 @@ static int msk_kill_worker_threads() {
 static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
 	struct msk_worker_data *wd;
 
-	INFO_LOG("signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
+	INFO_LOG(internals->debug, "signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
+
+	// Don't signal and do it directly if no worker
+	if (internals->worker_pool.worker_count == -1) {
+		if (flag & MSK_HAS_TRANS_CM_LOCK)
+			pthread_mutex_unlock(&trans->ctx_lock);
+		msk_worker_callback(trans, ctx, status, opcode);
+		if (flag & MSK_HAS_TRANS_CM_LOCK)
+			pthread_mutex_lock(&trans->ctx_lock);
+		return 0;
+	}
 
 
 	// needs CM lock and not ctx lock because only flush cares about processing and it doesn't change anything else for other things holding ctx lock...
@@ -558,7 +574,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	int ret = 0;
 	msk_trans_t *trans = cm_id->context;
 
-	INFO_LOG("cma_event type %s", rdma_event_str(event->event));
+	INFO_LOG(internals->debug, "cma_event type %s", rdma_event_str(event->event));
 
 	if (trans->bad_recv_wr) {
 		ERROR_LOG("Something was bad on that recv");
@@ -569,7 +585,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 
 	switch (event->event) {
 	case RDMA_CM_EVENT_ADDR_RESOLVED:
-		INFO_LOG("ADDR_RESOLVED");
+		INFO_LOG(internals->debug, "ADDR_RESOLVED");
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ADDR_RESOLVED;
 		pthread_cond_broadcast(&trans->cm_cond);
@@ -577,7 +593,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
-		INFO_LOG("ROUTE_RESOLVED");
+		INFO_LOG(internals->debug, "ROUTE_RESOLVED");
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ROUTE_RESOLVED;
 		pthread_cond_broadcast(&trans->cm_cond);
@@ -585,7 +601,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_ESTABLISHED:
-		INFO_LOG("ESTABLISHED");
+		INFO_LOG(internals->debug, "ESTABLISHED");
 		pthread_mutex_lock(&trans->cm_lock);
 		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
 			ERROR_LOG("msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
@@ -600,7 +616,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_CONNECT_REQUEST:
-		INFO_LOG("CONNECT_REQUEST");
+		INFO_LOG(internals->debug, "CONNECT_REQUEST");
 		//even if the cm_id is new, trans is the good parent's trans.
 		pthread_mutex_lock(&trans->cm_lock);
 
@@ -661,7 +677,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	default:
-		INFO_LOG("unhandled event: %s, ignoring\n",
+		INFO_LOG(internals->debug, "unhandled event: %s, ignoring\n",
 			rdma_event_str(event->event));
 		break;
 	}
@@ -791,7 +807,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 		case IBV_WC_SEND:
 		case IBV_WC_RDMA_WRITE:
 		case IBV_WC_RDMA_READ:
-			INFO_LOG("WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc.opcode);
+			INFO_LOG(internals->debug, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc.opcode);
 
 			ctx = (msk_ctx_t *)wc.wr_id;
 			msk_signal_worker(trans, ctx, wc.status, wc.opcode, flag);
@@ -799,7 +815,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 
 		case IBV_WC_RECV:
 		case IBV_WC_RECV_RDMA_WITH_IMM:
-			INFO_LOG("WC_RECV");
+			INFO_LOG(internals->debug, "WC_RECV");
 
 			if (wc.wc_flags & IBV_WC_WITH_IMM) {
 				//FIXME ctx->pdata->imm_data = ntohl(wc.imm_data);
@@ -900,7 +916,7 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 	struct msk_ctx *ctx;
 	int i, wait, ret;
 
-	INFO_LOG("flushing %p", trans);
+	INFO_LOG(internals->debug, "flushing %p", trans);
 
 	pthread_mutex_lock(&trans->cm_lock);
 	pthread_mutex_lock(&trans->ctx_lock);
@@ -1156,6 +1172,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		}
 
 		pthread_mutex_lock(&internals->lock);
+		internals->debug = attr->debug;
 		if (internals->run_threads == 0) {
 			internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : (attr->server ? 3 : 1);
 			internals->worker_pool.q_size = attr->worker_queue_size ? attr->worker_queue_size : 20;
@@ -1223,7 +1240,7 @@ static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
 static int msk_setup_qp(msk_trans_t *trans) {
 	int ret;
 
-	INFO_LOG("trans: %p", trans);
+	INFO_LOG(internals->debug, "trans: %p", trans);
 
 	if (!trans->pd)
 		trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
@@ -1264,7 +1281,7 @@ static int msk_setup_qp(msk_trans_t *trans) {
 		return ret;
 	}
 
-	INFO_LOG("created qp %p", trans->qp);
+	INFO_LOG(internals->debug, "created qp %p", trans->qp);
 	return 0;
 }
 
@@ -1315,7 +1332,7 @@ int msk_bind_server(msk_trans_t *trans) {
 	char str[INET_ADDRSTRLEN];
 
 	inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
-	INFO_LOG("addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
+	INFO_LOG(internals->debug, "addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
 
 	trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
 	if (!trans->conn_requests) {
@@ -1440,7 +1457,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
 
 	while (trans->state != MSK_CONNECTED) {
 		pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-		INFO_LOG("Got a cond, state: %i", trans->state);
+		INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
 	}
 
 	pthread_mutex_unlock(&trans->cm_lock);
@@ -1477,7 +1494,7 @@ msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *absti
 				break;
 
 		if (i == trans->server) {
-			INFO_LOG("Waiting for a connection to come in");
+			INFO_LOG(internals->debug, "Waiting for a connection to come in");
 			if (abstime)
 				ret = pthread_cond_timedwait(&trans->cm_cond, &trans->cm_lock, abstime);
 			else
@@ -1496,7 +1513,7 @@ msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *absti
 		return NULL;
 	}
 
-	INFO_LOG("Got a connection request - creating child");
+	INFO_LOG(internals->debug, "Got a connection request - creating child");
 
 	child_trans = clone_trans(trans, cm_id);
 
@@ -1548,7 +1565,7 @@ static int msk_bind_client(msk_trans_t *trans) {
 
 		while (trans->state == MSK_INIT) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG("Got a cond, state: %i", trans->state);
+			INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
 		}
 		if (trans->state != MSK_ADDR_RESOLVED) {
 			ERROR_LOG("Could not resolve addr");
@@ -1565,7 +1582,7 @@ static int msk_bind_client(msk_trans_t *trans) {
 
 		while (trans->state == MSK_ADDR_RESOLVED) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG("Got a cond, state: %i", trans->state);
+			INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
 		}
 
 		if (trans->state != MSK_ROUTE_RESOLVED) {
@@ -1615,7 +1632,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
 
 		while (trans->state == MSK_ROUTE_RESOLVED) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG("Got a cond, state: %i", trans->state);
+			INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
 		}
 
 		if (trans->state != MSK_CONNECTED) {
@@ -1683,7 +1700,7 @@ int msk_connect(msk_trans_t *trans) {
  * @return 0 on success, the value of errno on error
  */
 int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
-	INFO_LOG("posting recv");
+	INFO_LOG(internals->debug, "posting recv");
 	msk_ctx_t *rctx;
 	int i, ret;
 
@@ -1705,12 +1722,12 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 				break;
 
 		if (i == trans->rq_depth) {
-			INFO_LOG("Waiting for cond");
+			INFO_LOG(internals->debug, "Waiting for cond");
 			pthread_cond_wait(&trans->cm_cond, &trans->ctx_lock);
 		}
 
 	} while ( i == trans->rq_depth );
-	INFO_LOG("got a free context");
+	INFO_LOG(internals->debug, "got a free context");
 	rctx->used = MSK_CTX_PENDING;
 
 	pthread_mutex_unlock(&trans->ctx_lock);
@@ -1728,7 +1745,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 			return EINVAL;
 		} 
 		rctx->sg_list[i].addr = (uintptr_t) pdata->data;
-		INFO_LOG("addr: %lx\n", rctx->sg_list->addr);
+		INFO_LOG(internals->debug, "addr: %lx\n", rctx->sg_list->addr);
 		rctx->sg_list[i].length = pdata->max_size;
 		rctx->sg_list[i].lkey = mr->lkey;
 		pdata = pdata->next; 
@@ -1749,7 +1766,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct i
 }
 
 static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, msk_data_t *pdata, int num_sge, struct ibv_mr *mr, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
-	INFO_LOG("posting a send with op %d", opcode);
+	INFO_LOG(internals->debug, "posting a send with op %d", opcode);
 	msk_ctx_t *wctx;
 	int i, ret;
 	uint32_t totalsize = 0;
@@ -1784,12 +1801,12 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 				break;
 
 		if (i == trans->sq_depth) {
-			INFO_LOG("waiting for cond");
+			INFO_LOG(internals->debug, "waiting for cond");
 			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
 		}
 
 	} while ( i == trans->sq_depth );
-	INFO_LOG("got a free context");
+	INFO_LOG(internals->debug, "got a free context");
 	wctx->used = MSK_CTX_PENDING;
 
 	pthread_mutex_unlock(&trans->ctx_lock);
@@ -1813,7 +1830,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 		}
 
 		wctx->sg_list[i].addr = (uintptr_t)pdata->data;
-		INFO_LOG("addr: %lx\n", wctx->sg_list[i].addr);
+		INFO_LOG(internals->debug, "addr: %lx\n", wctx->sg_list[i].addr);
 		wctx->sg_list[i].length = pdata->size;
 		wctx->sg_list[i].lkey = mr->lkey;
 		totalsize += pdata->size;

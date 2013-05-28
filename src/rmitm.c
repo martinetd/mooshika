@@ -49,11 +49,11 @@
 #include <pcap.h>
 #include <linux/if_arp.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 #include "rmitm.h"
 
-#define CHUNK_SIZE 1024*1024 // nfs page size
+#define DEFAULT_BLOCK_SIZE 1024*1024 // nfs page size
 #define RECV_NUM 4
 #define PACKET_HARD_MAX_LEN (64*1024-1)
 #define PACKET_TRUNC_LEN 1000
@@ -75,6 +75,11 @@ struct privatedata {
 	struct datalock *first_datalock;
 	pthread_mutex_t *plock;
 	pthread_cond_t *pcond;
+};
+
+struct thread_arg {
+	pcap_dumper_t *pcap_dumper;
+	uint32_t block_size;
 };
 
 static int run_threads = 1;
@@ -151,7 +156,16 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 void print_help(char **argv) {
-	printf("Usage: %s -s port -c addr port\n", argv[0]);
+	printf("Usage: %s -s port -c addr port [-w out.pcap] [-b blocksize]\n", argv[0]);
+	printf("Mandatory arguments:\n"
+		"	-c, --client addr port: connect point on incoming connection\n"
+		"	-s, --server port: listen on local addresses at given port\n"
+		"	OR\n"
+		"	-S addr port: listen on given address/port\n"
+		"Optional arguments:\n"
+		"	-w out.pcap: output file\n"
+		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
+
 }
 
 void* flush_thread(void *arg) {
@@ -172,20 +186,21 @@ void* flush_thread(void *arg) {
 void *setup_thread(void *arg){
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
-	const size_t mr_size = 2*(RECV_NUM+1)*(CHUNK_SIZE+PACKET_HDR_LEN)*sizeof(char);
+	struct thread_arg *thread_arg;
 	msk_data_t *data;
 	struct datalock *datalock;
 	struct pkt_hdr pkt_hdr;
 	int i;
 	struct privatedata *s_priv, *c_priv;
 	msk_trans_t *child_trans, *c_trans;
-	pcap_dumper_t *pcap_dumper;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 
 	TEST_NZ(child_trans = arg);
 	TEST_NZ(c_trans = child_trans->private_data);
-	TEST_NZ(pcap_dumper = c_trans->private_data);
+	TEST_NZ(thread_arg = c_trans->private_data);
+
+	const size_t mr_size = 2*(RECV_NUM+1)*(thread_arg->block_size+PACKET_HDR_LEN)*sizeof(char);
 
 	TEST_Z(msk_connect(c_trans));
 
@@ -236,9 +251,9 @@ void *setup_thread(void *arg){
 			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
 			pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.src_sin.sin_port;
 		}
-		memcpy(rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
-		data[i].data=rdmabuf+(i)*(CHUNK_SIZE+PACKET_HDR_LEN)+PACKET_HDR_LEN;
-		data[i].max_size=CHUNK_SIZE;
+		memcpy(rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
+		data[i].data=rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN)+PACKET_HDR_LEN;
+		data[i].max_size=thread_arg->block_size;
 		datalock[i].data = &data[i];
 		pthread_mutex_init(&datalock[i].lock, NULL);
 	}
@@ -250,8 +265,8 @@ void *setup_thread(void *arg){
 	c_priv = c_trans->private_data;
 
 
-	s_priv->pcap_dumper = pcap_dumper;
-	c_priv->pcap_dumper = s_priv->pcap_dumper;
+	s_priv->pcap_dumper = thread_arg->pcap_dumper;
+	c_priv->pcap_dumper = thread_arg->pcap_dumper;
 
 	c_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
 	s_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
@@ -282,7 +297,7 @@ void *setup_thread(void *arg){
 	TEST_Z(msk_finalize_connect(c_trans));
 	TEST_Z(msk_finalize_accept(child_trans));
 
-	printf("New connection setup\n");
+	ERROR_LOG("New connection setup\n");
 
 	/* Wait till either connection has a disconnect callback */
 	pthread_cond_wait(&cond, &lock);
@@ -311,23 +326,29 @@ int main(int argc, char **argv) {
 
 	pthread_t thrid, flushthrid;
 
+	char *pcap_file;
 	pcap_t *pcap;
 	pcap_dumper_t *pcap_dumper;
 
 	// argument handling
+	struct thread_arg thread_arg;
 	int option_index = 0;
 	int op, last_op;
+	char *tmp_s;
 	struct hostent *host;
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
 		{ "server",	required_argument,	0,		's' },
 		{ "help",	no_argument,		0,		'h' },
+		{ "verbose",	no_argument,		0,		'v' },
+		{ "block-size",	required_argument,	0,		'b' },
 		{ 0,		0,			0,		 0  }
 	};
 
 
 	memset(&s_attr, 0, sizeof(msk_trans_attr_t));
 	memset(&c_attr, 0, sizeof(msk_trans_attr_t));
+	memset(&thread_arg, 0, sizeof(struct thread_arg));
 
 	s_attr.server = -1; // put an incorrect value to check if we're either client or server
 	c_attr.server = -1;
@@ -342,9 +363,12 @@ int main(int argc, char **argv) {
 	c_attr.max_recv_sge = 1;
 	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
+	s_attr.worker_count = -1;
+	c_attr.worker_count = -1;
+	pcap_file = "/tmp/rmitm.pcap";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvs:S:c:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvs:S:c:w:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -368,7 +392,8 @@ int main(int argc, char **argv) {
 				print_help(argv);
 				exit(0);
 			case 'v':
-				ERROR_LOG("verbose switch not ready just yet, come back later!\n");
+				c_attr.debug = 1;
+				s_attr.debug = 1;
 				break;
 			case 'c':
 				c_attr.server = 0;
@@ -386,6 +411,21 @@ int main(int argc, char **argv) {
 				host = gethostbyname(optarg);
 				//FIXME: if (host->h_addrtype == AF_INET6) {
 				memcpy(&s_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				break;
+			case 'w':
+				pcap_file = optarg;
+				break;
+			case 'b':
+				thread_arg.block_size = strtoul(optarg, &tmp_s, 0);
+				if (errno || thread_arg.block_size == 0) {
+					thread_arg.block_size = 0;
+					ERROR_LOG("Invalid block size, assuming default (%u)", DEFAULT_BLOCK_SIZE);
+					break;
+				}
+				if (tmp_s[0] != 0) {
+					set_size(&thread_arg.block_size, tmp_s);
+				}
+				INFO_LOG(c_attr.debug, "block size: %u", thread_arg.block_size);
 				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
@@ -411,8 +451,12 @@ int main(int argc, char **argv) {
 	TEST_Z(msk_bind_server(s_trans));
 
 	pcap = pcap_open_dead(DLT_RAW, PACKET_HARD_MAX_LEN);
-	pcap_dumper = pcap_dump_open(pcap, "/tmp/rmitm.pcap");
+	pcap_dumper = pcap_dump_open(pcap, pcap_file);
 	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &pcap_dumper));
+
+	thread_arg.pcap_dumper = pcap_dumper;
+	if (thread_arg.block_size == 0)
+		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 
 	signal(SIGINT, sigHandler);
 
@@ -432,7 +476,7 @@ int main(int argc, char **argv) {
 
 		// ugly hack to have all the arguments we need given...
 		child_trans->private_data = c_trans;
-		c_trans->private_data = pcap_dumper;
+		c_trans->private_data = &thread_arg;
 		TEST_Z(pthread_create(&thrid, NULL, setup_thread, child_trans));
 	}
 
