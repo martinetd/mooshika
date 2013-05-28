@@ -2,15 +2,14 @@ SUBDIRS = . tests #build . before tests
 
 AM_CFLAGS = -g -D_REENTRANT -Wall -Wimplicit -Wformat -Wmissing-braces -Wno-pointer-sign -Werror -I$(srcdir)/../include
 
-lib_LTLIBRARIES = libmooshika.la libmooshika_shm.la
+lib_LTLIBRARIES = libmooshika.la
 libmooshika_la_SOURCES = trans_rdma.c
 libmooshika_la_LDFLAGS = -version-info 2:0:0
-libmooshika_shm_la_SOURCES = trans_shm.c
-libmooshika_shm_la_LDFLAGS = -version-info 2:0:0
+libmooshika_la_LIBADD = -lrdmacm -libverbs -lpthread -lrt
 
 bin_PROGRAMS = rcat rmitm
 rcat_SOURCES = rcat.c
-rcat_LDADD = -lrdmacm -libverbs -lpthread
+rcat_LDADD = -lpthread
 if USE_SHM
 rcat_LDADD += libmooshika_shm.la
 else
@@ -18,7 +17,7 @@ rcat_LDADD += libmooshika.la
 endif
 
 rmitm_SOURCES = rmitm.c
-rmitm_LDADD = -lrdmacm -libverbs -lpthread -lpcap
+rmitm_LDADD = -lpthread -lpcap
 if USE_SHM
 rmitm_LDADD += libmooshika_shm.la
 else
