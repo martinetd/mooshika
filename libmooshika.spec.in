@@ -16,13 +16,28 @@ Group: Application/Devel
 Summary: Development files for libmooshika
 Requires: librdmacm-devel, libibverbs-devel
 
-%description devel
-Development files for libmooshika
+%package rmitm
+Group: Application/Devel
+Summary: RDMA man in the middle
+Requires: libpcap
+BuildRequires: libpcap-devel
 
+%package rcat
+Group:Application/Devel
+Summary: RDMA equivalent of netcat
 
 %description
 This package contains the libmooshika library
 It is an helper for rdma connection handling
+
+%description devel
+Development files for libmooshika
+
+%description rmitm
+RDMA man in the middle
+
+%description rcat
+RDMA equivalent of netcat
 
 %prep
 %setup -q -n %{name}-%{version}
@@ -41,7 +56,12 @@ rm -rf %{buildroot}
 %files
 %{_libdir}/*.so*
 %{_libdir}/*.la
-%{_bindir}/*
+
+%files rmitm
+%{_bindir}/rmitm
+
+%files rcat
+%{_bindir}/rcat
 
 %files devel
 %{_includedir}/*

@@ -46,7 +46,7 @@
 #include <fcntl.h>	//open
 #include <signal.h>
 
-#include <pcap.h>
+#include <pcap/pcap.h>
 #include <linux/if_arp.h>
 
 #include "utils.h"

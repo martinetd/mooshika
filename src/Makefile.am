@@ -10,17 +10,11 @@ libmooshika_la_LIBADD = -lrdmacm -libverbs -lpthread -lrt
 bin_PROGRAMS = rcat rmitm
 rcat_SOURCES = rcat.c
 rcat_LDADD = -lpthread
-if USE_SHM
-rcat_LDADD += libmooshika_shm.la
-else
 rcat_LDADD += libmooshika.la
-endif
 
+if ENABLE_RMITM
 rmitm_SOURCES = rmitm.c
 rmitm_LDADD = -lpthread -lpcap
-if USE_SHM
-rmitm_LDADD += libmooshika_shm.la
-else
 rmitm_LDADD += libmooshika.la
 endif
 

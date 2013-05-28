@@ -42,9 +42,13 @@ else
 fi
 
 
-# use shm implem
-AC_ARG_ENABLE([shm], AS_HELP_STRING([--enable-shm], [use shmem implementation for the rcat binary [default=no]]))
-AM_CONDITIONAL(USE_SHM, test "x$enable_shm" = "xyes")
+AC_ARG_ENABLE(rmitm,
+	AC_HELP_STRING([--enable-rmitm], [Enable rmitm compilation, requires pcap development files (auto)]))
+
+if test x$enable_rmitm != xno ; then
+	AC_CHECK_HEADERS([pcap/pcap.h], [ enable_rmitm=yes ], [if test x$enable_rmitm != x; then AC_MSG_ERROR(rmitm requires libpcap); else echo "libpcap development files not found, disabling rmitm"; fi])
+fi
+AM_CONDITIONAL(ENABLE_RMITM, test x$enable_rmitm = xyes)
 
 #for exporting to spec file
 AC_SUBST(ac_configure_args)
