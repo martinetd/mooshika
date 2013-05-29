@@ -232,13 +232,13 @@ void *setup_thread(void *arg){
 	*/
 	pkt_hdr.ipv6.ip_src.s6_addr16[4] = 0xffff;
 	pkt_hdr.ipv6.ip_src.s6_addr16[5] = 0x0000;
-	pkt_hdr.ipv6.ip_src.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-	pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.src_sin.sin_port;
+	pkt_hdr.ipv6.ip_src.s6_addr32[3] = ((struct sockaddr_in*)&c_trans->cm_id->route.addr.dst_addr)->sin_addr.s_addr;
+	pkt_hdr.tcp.th_sport = ((struct sockaddr_in*)&child_trans->cm_id->route.addr.src_addr)->sin_port;
 
 	pkt_hdr.ipv6.ip_dst.s6_addr16[4] = 0xffff;
 	pkt_hdr.ipv6.ip_dst.s6_addr16[5] = 0x0000;
-	pkt_hdr.ipv6.ip_dst.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-	pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.dst_sin.sin_port;
+	pkt_hdr.ipv6.ip_dst.s6_addr32[3] = ((struct sockaddr_in*)&child_trans->cm_id->route.addr.dst_addr)->sin_addr.s_addr;
+	pkt_hdr.tcp.th_dport = ((struct sockaddr_in*)&child_trans->cm_id->route.addr.dst_addr)->sin_port;
 
 	pkt_hdr.tcp.th_data_off = INT8_C(sizeof(struct tcp_hdr) * 4); /* *4 because words of 2 bits? it's odd. */
 	pkt_hdr.tcp.th_window = htons(100);
@@ -246,10 +246,10 @@ void *setup_thread(void *arg){
 
 	for (i=0; i < 2*RECV_NUM; i++) {
 		if (i == RECV_NUM) { // change packet direction
-			pkt_hdr.ipv6.ip_src.s6_addr32[3] = child_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-			pkt_hdr.tcp.th_sport = child_trans->cm_id->route.addr.dst_sin.sin_port;
-			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = c_trans->cm_id->route.addr.dst_sin.sin_addr.s_addr;
-			pkt_hdr.tcp.th_dport = child_trans->cm_id->route.addr.src_sin.sin_port;
+			pkt_hdr.ipv6.ip_src.s6_addr32[3] = ((struct sockaddr_in*)&child_trans->cm_id->route.addr.dst_addr)->sin_addr.s_addr;
+			pkt_hdr.tcp.th_sport = ((struct sockaddr_in*)&child_trans->cm_id->route.addr.dst_addr)->sin_port;
+			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = ((struct sockaddr_in*)&c_trans->cm_id->route.addr.dst_addr)->sin_addr.s_addr;
+			pkt_hdr.tcp.th_dport = ((struct sockaddr_in*)&child_trans->cm_id->route.addr.src_addr)->sin_port;
 		}
 		memcpy(rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
 		data[i].data=rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN)+PACKET_HDR_LEN;
