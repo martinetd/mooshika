@@ -1,7 +1,7 @@
 /*
  *
  * Copyright CEA/DAM/DIF (2012)
- * contributor : Dominique Martinet  dominique.martinet.ocre@cea.fr //TODO: use a real mail?
+ * contributor : Dominique Martinet  dominique.martinet@cea.fr
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
