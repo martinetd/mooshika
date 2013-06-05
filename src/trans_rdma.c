@@ -1990,20 +1990,20 @@ int msk_wait_n_write(msk_trans_t *trans, msk_data_t *pdata, int num_sge, struct 
 }
 
 
-struct sockaddr *msk_get_peer_addr(struct rdma_cm_id *id) {
-	return rdma_get_peer_addr(id);
+struct sockaddr *msk_get_dst_addr(msk_trans_t *trans) {
+	return rdma_get_peer_addr(trans->cm_id);
 }
 
-struct sockaddr *msk_get_local_addr(struct rdma_cm_id *id) {
-	return rdma_get_local_addr(id);
+struct sockaddr *msk_get_src_addr(msk_trans_t *trans) {
+	return rdma_get_local_addr(trans->cm_id);
 }
 
-uint16_t msk_get_src_port(struct rdma_cm_id *id) {
-	return rdma_get_src_port(id);
+uint16_t msk_get_src_port(msk_trans_t *trans) {
+	return rdma_get_src_port(trans->cm_id);
 }
 
-uint16_t msk_get_dst_port(struct rdma_cm_id *id) {
-	return rdma_get_dst_port(id);
+uint16_t msk_get_dst_port(msk_trans_t *trans) {
+	return rdma_get_dst_port(trans->cm_id);
 }
 
 

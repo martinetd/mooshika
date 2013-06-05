@@ -174,7 +174,7 @@ static inline int msk_wait_write(msk_trans_t *trans, msk_data_t *pdata, struct i
 
 
 
-int msk_init(msk_trans_t **trans, msk_trans_attr_t *attr);
+int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr);
 
 // server specific:
 int msk_bind_server(msk_trans_t *trans);
@@ -199,10 +199,10 @@ msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size);
 
 void msk_print_devinfo(msk_trans_t *trans);
 
-struct sockaddr *msk_get_peer_addr(struct rdma_cm_id *id);
-struct sockaddr *msk_get_local_addr(struct rdma_cm_id *id);
-uint16_t msk_get_src_port(struct rdma_cm_id *id);
-uint16_t msk_get_dst_port(struct rdma_cm_id *id);
+struct sockaddr *msk_get_dst_addr(msk_trans_t *trans);
+struct sockaddr *msk_get_src_addr(msk_trans_t *trans);
+uint16_t msk_get_src_port(msk_trans_t *trans);
+uint16_t msk_get_dst_port(msk_trans_t *trans);
 
 
 
