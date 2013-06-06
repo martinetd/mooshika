@@ -449,10 +449,10 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 
 	// Don't signal and do it directly if no worker
 	if (internals->worker_pool.worker_count == -1) {
-		if (flag & MSK_HAS_TRANS_CM_LOCK)
+		if (flag & MSK_HAS_TRANS_CTX_LOCK)
 			pthread_mutex_unlock(&trans->ctx_lock);
 		msk_worker_callback(trans, ctx, status, opcode);
-		if (flag & MSK_HAS_TRANS_CM_LOCK)
+		if (flag & MSK_HAS_TRANS_CTX_LOCK)
 			pthread_mutex_lock(&trans->ctx_lock);
 		return 0;
 	}
@@ -890,7 +890,7 @@ static void *msk_cq_thread(void *arg) {
 				continue;
 			}
 
-			ret = msk_cq_event_handler(trans, MSK_HAS_NO_LOCK);
+			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_CM_LOCK);
 			if (ret) {
 				if (trans->state != MSK_CLOSED) {
 					ERROR_LOG("something went wrong with our cq_event_handler");
