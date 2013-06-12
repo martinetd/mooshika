@@ -608,7 +608,6 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 			trans->state = MSK_ERROR;
 		} else {
 			trans->state = MSK_CONNECTED;
-			msk_cq_addfd(trans);
 		}
 
 		pthread_cond_broadcast(&trans->cm_cond);
@@ -1446,23 +1445,29 @@ int msk_finalize_accept(msk_trans_t *trans) {
 	conn_param.rnr_retry_count = 10;
 
 	pthread_mutex_lock(&trans->cm_lock);
-	ret = rdma_accept(trans->cm_id, &conn_param);
-	if (ret) {
-		pthread_mutex_unlock(&trans->cm_lock);
-		ret = errno;
-		ERROR_LOG("rdma_accept failed: %s (%d)", strerror(ret), ret);
-		return ret;
-	}
+	do {
+		ret = rdma_accept(trans->cm_id, &conn_param);
+		if (ret) {
+			ret = errno;
+			ERROR_LOG("rdma_accept failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+		while (trans->state == MSK_CONNECT_REQUEST) {
+			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
+		}
 
-
-	while (trans->state != MSK_CONNECTED) {
-		pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-		INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
-	}
+		if (trans->state == MSK_CONNECTED) {
+			msk_cq_addfd(trans);
+		} else {
+			ret = ECONNRESET;
+			break;
+		}
+	} while (0);
 
 	pthread_mutex_unlock(&trans->cm_lock);
 
-	return 0;
+	return ret;
 }
 
 /**
@@ -1635,7 +1640,9 @@ int msk_finalize_connect(msk_trans_t *trans) {
 			INFO_LOG(internals->debug, "Got a cond, state: %i", trans->state);
 		}
 
-		if (trans->state != MSK_CONNECTED) {
+		if (trans->state == MSK_CONNECTED) {
+			msk_cq_addfd(trans);
+		} else {
 			ERROR_LOG("Connection failed");
 			ret = ECONNREFUSED;
 			break;
