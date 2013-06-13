@@ -71,7 +71,6 @@ struct privatedata {
 	pcap_dumper_t *pcap_dumper;
 	uint32_t seq_nr;
 	msk_trans_t *o_trans;
-	struct ibv_mr *mr;
 	struct datalock *first_datalock;
 	pthread_mutex_t *plock;
 	pthread_cond_t *pcond;
@@ -103,7 +102,7 @@ void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	}
 
 	pthread_mutex_lock(&datalock->lock);
-	if (msk_post_recv(priv->o_trans, pdata, priv->mr, callback_recv, callback_error, datalock))
+	if (msk_post_recv(priv->o_trans, pdata, callback_recv, callback_error, datalock))
 		ERROR_LOG("post_recv failed in send callback!");
 	pthread_mutex_unlock(&datalock->lock);
 }
@@ -131,7 +130,7 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	}
 
 	pthread_mutex_lock(&datalock->lock);
-	msk_post_send(priv->o_trans, pdata, priv->mr, callback_send, callback_error, datalock);
+	msk_post_send(priv->o_trans, pdata, callback_send, callback_error, datalock);
 
 	gettimeofday(&pcaphdr.ts, NULL);
 	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
@@ -254,6 +253,7 @@ void *setup_thread(void *arg){
 		memcpy(rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN), &pkt_hdr, PACKET_HDR_LEN);
 		data[i].data=rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN)+PACKET_HDR_LEN;
 		data[i].max_size=thread_arg->block_size;
+		data[i].mr = mr;
 		datalock[i].data = &data[i];
 		pthread_mutex_init(&datalock[i].lock, NULL);
 	}
@@ -275,9 +275,10 @@ void *setup_thread(void *arg){
 	c_priv->o_trans = child_trans;
 
 	s_priv->first_datalock = datalock;
-	s_priv->mr             = mr;
 	c_priv->first_datalock = datalock + RECV_NUM;
-	c_priv->mr             = mr;
+
+	memset(&lock, 0, sizeof(pthread_mutex_t));
+	memset(&cond, 0, sizeof(pthread_cond_t));
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
 	c_priv->plock = &lock;
@@ -287,8 +288,8 @@ void *setup_thread(void *arg){
 
 
 	for (i=0; i<RECV_NUM; i++) {
-		TEST_Z(msk_post_recv(c_trans, (&c_priv->first_datalock[i])->data, mr, callback_recv, callback_error, &c_priv->first_datalock[i]));
-		TEST_Z(msk_post_recv(child_trans, (&s_priv->first_datalock[i])->data, mr, callback_recv, callback_error, &s_priv->first_datalock[i]));
+		TEST_Z(msk_post_recv(c_trans, (&c_priv->first_datalock[i])->data, callback_recv, callback_error, &c_priv->first_datalock[i]));
+		TEST_Z(msk_post_recv(child_trans, (&s_priv->first_datalock[i])->data, callback_recv, callback_error, &s_priv->first_datalock[i]));
 	}
 
 	pthread_mutex_lock(&lock);

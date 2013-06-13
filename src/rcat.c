@@ -52,7 +52,6 @@
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); }} while (0)
 
 struct cb_arg {
-	struct ibv_mr *mr;
 	msk_data_t *ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
@@ -97,11 +96,11 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 		if (n != pdata->size)
 			ERROR_LOG("Wrote less than what was actually received");
 
-		TEST_Z(msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg));
-		TEST_Z(msk_post_send(trans, cb_arg->ackdata, cb_arg->mr, NULL, NULL, NULL));
+		TEST_Z(msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg));
+		TEST_Z(msk_post_send(trans, cb_arg->ackdata, NULL, NULL, NULL));
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		TEST_Z(msk_post_recv(trans, pdata, cb_arg->mr, callback_recv, callback_error, cb_arg));
+		TEST_Z(msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg));
 
 		pthread_mutex_lock(cb_arg->lock);
 		pthread_cond_signal(cb_arg->cond);
@@ -153,6 +152,7 @@ void* handle_trans(void *arg) {
 	ackdata->max_size = thread_arg->block_size;
 	ackdata->size = 1;
 	ackdata->data[0] = 0;
+	ackdata->mr = mr;
 
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
@@ -165,11 +165,11 @@ void* handle_trans(void *arg) {
 		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
 		rdata[i]->data=rdmabuf+i*thread_arg->block_size;
 		rdata[i]->max_size=thread_arg->block_size;
-		cb_arg[i].mr = mr;
+		rdata[i]->mr = mr;
 		cb_arg[i].ackdata = ackdata;
 		cb_arg[i].lock = &lock;
 		cb_arg[i].cond = &cond;
-		TEST_Z(msk_post_recv(trans, rdata[i], mr, callback_recv, callback_error, &(cb_arg[i])));
+		TEST_Z(msk_post_recv(trans, rdata[i], callback_recv, callback_error, &(cb_arg[i])));
 	}
 
 	trans->private_data = cb_arg;
@@ -186,6 +186,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
 	wdata->data = rdmabuf+RECV_NUM*thread_arg->block_size;
 	wdata->max_size = thread_arg->block_size;
+	wdata->mr = mr;
 
 	pollfd_stdin.fd = 0; // stdin
 	pollfd_stdin.events = POLLIN | POLLPRI;
@@ -207,7 +208,7 @@ void* handle_trans(void *arg) {
 
 		// post our data and wait for the other end's ack (sent in callback_recv)
 		pthread_mutex_lock(&lock);
-		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL, NULL));
+		TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL));
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	
