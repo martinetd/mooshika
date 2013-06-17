@@ -1729,7 +1729,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *pdata, int num_sge, ctx_call
 
 		if (i == trans->rq_depth) {
 			INFO_LOG(internals->debug, "Waiting for cond");
-			pthread_cond_wait(&trans->cm_cond, &trans->ctx_lock);
+			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
 		}
 
 	} while ( i == trans->rq_depth );
