@@ -41,7 +41,7 @@
 #include <errno.h>
 #include <poll.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 
 #define CHUNK_SIZE 1024
@@ -51,27 +51,25 @@
 #define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
 #define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
 
-struct datamr {
-	void *data;
-	struct ibv_mr *mr;
+struct datalock {
 	msk_data_t *ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
 
-void callback_send(msk_trans_t *trans, void *arg) {
+void callback_send(msk_trans_t *trans, msk_data_t *data, void *arg) {
 
 }
 
 void callback_disconnect(msk_trans_t *trans) {
 }
 
-void callback_recv(msk_trans_t *trans, void *arg) {
-	struct datamr *datamr = arg;
+void callback_recv(msk_trans_t *trans, msk_data_t *data, void *arg) {
+	struct datalock *datalock = arg;
 
-	pthread_mutex_lock(datamr->lock);
-	pthread_cond_signal(datamr->cond);
-	pthread_mutex_unlock(datamr->lock);		
+	pthread_mutex_lock(datalock->lock);
+	pthread_cond_signal(datalock->cond);
+	pthread_mutex_unlock(datalock->lock);
 }
 
 void print_help(char **argv) {
@@ -186,19 +184,18 @@ int main(int argc, char **argv) {
 	pthread_cond_init(&cond, NULL);
 
 	msk_data_t *rdata;
-	struct datamr datamr;
+	struct datalock datalock;
 
 	TEST_NZ(rdata = malloc(sizeof(msk_data_t)));
 	rdata->data=rdmabuf; //+i*CHUNK_SIZE*sizeof(char);
 	rdata->max_size=CHUNK_SIZE*sizeof(char);
-	datamr.data = (void*)&(rdata);
-	datamr.mr = mr;
-	datamr.ackdata = ackdata; 
-	datamr.lock = &lock;
-	datamr.cond = &cond;
+	rdata->mr = mr;
+	datalock.ackdata = ackdata;
+	datalock.lock = &lock;
+	datalock.cond = &cond;
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(msk_post_recv(trans, rdata, mr, callback_recv, &datamr));
+	TEST_Z(msk_post_recv(trans, rdata, callback_recv, NULL, &datalock));
 
 	if (trans->server) {
 		TEST_Z(msk_finalize_accept(trans));
@@ -208,6 +205,7 @@ int main(int argc, char **argv) {
 
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
 	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE*sizeof(char);
+	wdata->mr = mr;
 	wdata->max_size = CHUNK_SIZE*sizeof(char);
 
 	msk_rloc_t *rloc;
@@ -223,26 +221,26 @@ int main(int argc, char **argv) {
 		memcpy(wdata->data, "roses are red", 14);
 		wdata->size = 14;
 
-		TEST_Z(msk_post_write(trans, wdata, mr, rloc, callback_recv, &datamr));
+		TEST_Z(msk_post_write(trans, wdata, rloc, callback_recv, NULL, &datalock));
 
 		printf("waiting for write to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // write done
 
-		TEST_Z(msk_post_recv(trans, rdata, mr, callback_recv, &datamr));
-		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL)); // ack to say we're done
+		TEST_Z(msk_post_recv(trans, rdata, callback_recv, NULL, &datalock));
+		TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL)); // ack to say we're done
 
 		printf("waiting for something to be ready to read\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 
 		wdata->size=17;
-		TEST_Z(msk_post_read(trans, wdata, mr, rloc, callback_recv, &datamr));
+		TEST_Z(msk_post_read(trans, wdata, rloc, callback_recv, NULL, &datalock));
 
 		printf("wait for read to finish\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 
 		printf("%s\n", wdata->data);
 
-		TEST_Z(msk_wait_send(trans, wdata, mr)); // ack - other can quit
+		TEST_Z(msk_wait_send(trans, wdata)); // ack - other can quit
 
 
 	} else {
@@ -250,17 +248,17 @@ int main(int argc, char **argv) {
 
 		memcpy(wdata->data, rloc, sizeof(msk_rloc_t));
 		wdata->size = sizeof(msk_rloc_t);
-		msk_post_send(trans, wdata, mr, NULL, NULL);
+		msk_post_send(trans, wdata, NULL, NULL, NULL);
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)
 
 		printf("%s\n", ackdata->data);
 
-		TEST_Z(msk_post_recv(trans, rdata, mr, callback_recv, &datamr));
+		TEST_Z(msk_post_recv(trans, rdata, callback_recv, NULL, &datalock));
 
 		memcpy(ackdata->data, "violets are blue", 17);
-		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL)); // say we've got something to read
+		TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL)); // say we've got something to read
 
 		printf("waiting for server to be done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock));

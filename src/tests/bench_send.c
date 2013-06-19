@@ -41,7 +41,7 @@
 #include <errno.h>
 #include <poll.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 
 #define CHUNK_SIZE 1024*1024
@@ -51,18 +51,13 @@
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
-struct datamr {
-	msk_data_t *data;
-	struct ibv_mr *mr;
-};
-
 struct locks {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 	msk_data_t *ackdata;
 };
 
-void callback_send(msk_trans_t *trans, void *arg) {
+void callback_send(msk_trans_t *trans, msk_data_t *data, void *arg) {
 
 }
 
@@ -80,33 +75,27 @@ void callback_disconnect(msk_trans_t *trans) {
 	}
 }
 
-void callback_recv(msk_trans_t *trans, void *arg) {
-	struct datamr *datamr = arg;
+void callback_recv(msk_trans_t *trans, msk_data_t *data, void *arg) {
 	struct locks *locks = trans->private_data;
-	if (!datamr) {
-		ERROR_LOG("no callback_arg?");
-		return;
-	}
 	if (!locks) {
 		ERROR_LOG("no locks?");
 		return;
 	}
 
-	msk_data_t *pdata = datamr->data;
-	int i = (int)pdata->data[0];
+	int i = (int)data->data[0];
 
 //	printf("got stuff from %d\n", i);
 
-	if (pdata->size != 1) {
+	if (data->size != 1) {
 	// either we get real data and write it to stdout (do we want to bother writing it?)
-		write(1, (char *)pdata->data, pdata->size);
+		write(1, (char *)data->data, data->size);
 		fflush(stdout);
 
-		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
-		msk_post_send(trans, locks[i].ackdata, datamr->mr, NULL, NULL);
+		msk_post_recv(trans, data, callback_recv, NULL, NULL);
+		msk_post_send(trans, locks[i].ackdata, NULL, NULL, NULL);
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		msk_post_recv(trans, pdata, datamr->mr, callback_recv, datamr);
+		msk_post_recv(trans, data, callback_recv, NULL, NULL);
 
 		pthread_mutex_lock(&locks[i].lock);
 		pthread_cond_signal(&locks[i].cond);
@@ -126,7 +115,6 @@ void* handle_trans(void *arg) {
 	msk_data_t *ackdata;
 
 	msk_data_t **rdata;
-	struct datamr *datamr;
 	struct locks *locks;
 	int i;
 
@@ -141,16 +129,14 @@ void* handle_trans(void *arg) {
 	TEST_NZ(ackdata = malloc(NUM_THREADS*sizeof(msk_data_t)));
 	// malloc receive structs as well as a custom callback argument, and post it for future receive
 	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
-	TEST_NZ(datamr = malloc(NUM_THREADS*RECV_NUM*sizeof(struct datamr)));
 	TEST_NZ(locks = malloc(NUM_THREADS*sizeof(struct locks)));
 
 	for (i=0; i < RECV_NUM; i++) {
 		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE;
 		rdata[i]->max_size=CHUNK_SIZE;
-		datamr[i].data = rdata[i];
-		datamr[i].mr = mr;
-		TEST_Z(msk_post_recv(trans, rdata[i], mr, callback_recv, &(datamr[i])));
+		rdata[i]->mr = mr;
+		TEST_Z(msk_post_recv(trans, rdata[i], callback_recv, NULL, NULL));
 	}
 	for (i=0; i < NUM_THREADS; i++) {
 		pthread_mutex_init(&locks[i].lock, NULL);
@@ -159,6 +145,7 @@ void* handle_trans(void *arg) {
 		locks[i].ackdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE+i;
 		locks[i].ackdata->max_size = 1;
 		locks[i].ackdata->size = 1;
+		locks[i].ackdata->mr = mr;
 		locks[i].ackdata->data[0] = i;
 
 	}
@@ -184,12 +171,13 @@ void* handle_trans(void *arg) {
 		wdata->data = rdmabuf+(RECV_NUM+1+num)*CHUNK_SIZE;
 		wdata->max_size = CHUNK_SIZE;
 		wdata->size = CHUNK_SIZE;
+		wdata->mr = mr;
 		wdata->data[0] = num;
 
 		pthread_mutex_lock(&locks[num].lock);
 		while (trans->state == MSK_CONNECTED) {
 
-			TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL));
+			TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL));
 			pthread_cond_wait(&locks[num].cond, &locks[num].lock);
 //			printf("got cond on thread %d\n", num);
 		}	
@@ -237,7 +225,6 @@ void* handle_trans(void *arg) {
 	msk_destroy_trans(&trans);
 
 	// free stuff
-	free(datamr);
 	free(locks); // don't bother with mutex/cond_destroy
 	free(rdata);
 	free(ackdata);

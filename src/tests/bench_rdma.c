@@ -41,7 +41,7 @@
 #include <errno.h>
 #include <poll.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 
 #define CHUNK_SIZE 1024*1024
@@ -52,38 +52,36 @@
 #define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
 #define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
 
-struct datamr {
-	struct ibv_mr *mr;
+struct datalock {
 	msk_rloc_t *rloc;
-	msk_data_t *data;
 	volatile int *count;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
 
-void callback_send(msk_trans_t *trans, void *arg) {
+void callback_send(msk_trans_t *trans, msk_data_t *data, void *arg) {
 
 }
 
 void callback_disconnect(msk_trans_t *trans) {
 }
 
-void callback_recv(msk_trans_t *trans, void *arg) {
-	struct datamr *datamr = arg;
+void callback_recv(msk_trans_t *trans, msk_data_t *data, void *arg) {
+	struct datalock *datalock = arg;
 
-	pthread_mutex_lock(datamr->lock);
-	pthread_cond_signal(datamr->cond);
-	pthread_mutex_unlock(datamr->lock);
+	pthread_mutex_lock(datalock->lock);
+	pthread_cond_signal(datalock->cond);
+	pthread_mutex_unlock(datalock->lock);
 }
 
-void callback_read(msk_trans_t *trans, void *arg) {
-	struct datamr *datamr = arg;
+void callback_read(msk_trans_t *trans, msk_data_t *data, void *arg) {
+	struct datalock *datalock = arg;
 
-	if (trans->state == MSK_CONNECTED && *datamr->count < SEND_COUNT)
-		TEST_Z(msk_post_RW(trans, datamr->data, datamr->mr, datamr->rloc, callback_read, datamr));
+	if (trans->state == MSK_CONNECTED && *datalock->count < SEND_COUNT)
+		TEST_Z(msk_post_RW(trans, data, datalock->rloc, callback_read, NULL, datalock));
 
-	*datamr->count += 1;
-	pthread_cond_signal(datamr->cond);
+	*datalock->count += 1;
+	pthread_cond_signal(datalock->cond);
 }
 
 void print_help(char **argv) {
@@ -198,24 +196,23 @@ int main(int argc, char **argv) {
 	pthread_cond_init(&cond, NULL);
 
 	msk_data_t **rdata;
-	struct datamr *datamr;
+	struct datalock *datalock;
 	int i;
 
 	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
-	TEST_NZ(datamr = malloc(RECV_NUM*sizeof(struct datamr)));
+	TEST_NZ(datalock = malloc(RECV_NUM*sizeof(struct datalock)));
 
 	for (i=0; i < RECV_NUM; i++) {
 		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
 		rdata[i]->data=rdmabuf+i*CHUNK_SIZE*sizeof(char);
 		rdata[i]->max_size=CHUNK_SIZE*sizeof(char);
-		datamr[i].data = rdata[i];
-		datamr[i].mr = mr;
-		datamr[i].lock = &lock;
-		datamr[i].cond = &cond;
+		rdata[i]->mr = mr;
+		datalock[i].lock = &lock;
+		datalock[i].cond = &cond;
 	}
 
 	pthread_mutex_lock(&lock);
-	TEST_Z(msk_post_recv(trans, rdata[0], mr, callback_recv, &(datamr[0]))); // post only one, others will be used for reads
+	TEST_Z(msk_post_recv(trans, rdata[0], callback_recv, NULL, &(datalock[0]))); // post only one, others will be used for reads
 
 	if (trans->server) {
 		TEST_Z(msk_finalize_accept(trans));
@@ -226,6 +223,7 @@ int main(int argc, char **argv) {
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
 	wdata->data = rdmabuf+RECV_NUM*CHUNK_SIZE*sizeof(char);
 	wdata->max_size = CHUNK_SIZE*sizeof(char);
+	wdata->mr = mr;
 
 	msk_rloc_t *rloc;
 
@@ -241,9 +239,9 @@ int main(int argc, char **argv) {
 
 		for (i=0; i < RECV_NUM; i++) {
 			rdata[i]->size=CHUNK_SIZE*sizeof(char);
-			datamr[i].rloc = rloc;
-			datamr[i].count = &count;
-			TEST_Z(msk_post_RW(trans, rdata[i], mr, rloc, callback_read, &(datamr[i])));
+			datalock[i].rloc = rloc;
+			datalock[i].count = &count;
+			TEST_Z(msk_post_RW(trans, rdata[i], rloc, callback_read, NULL, &(datalock[i])));
 		}
 
 		while (count < SEND_COUNT) {
@@ -255,7 +253,7 @@ int main(int argc, char **argv) {
 		printf("count: %d\n", count);
 
 		wdata->size = 1;
-		TEST_Z(msk_post_send(trans, wdata, mr, NULL, NULL)); // ack - other can quit
+		TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL)); // ack - other can quit
 		usleep(10000); //FIXME: wait till last work request is done. cannot use wait_send because the other will get the send before we get our ack, so they might disconnect and our threads might fail before we get our WC that would unstuck us.
 
 	} else {
@@ -263,7 +261,7 @@ int main(int argc, char **argv) {
 
 		memcpy(wdata->data, rloc, sizeof(msk_rloc_t));
 		wdata->size = sizeof(msk_rloc_t);
-		msk_post_send(trans, wdata, mr, NULL, NULL);
+		msk_post_send(trans, wdata, NULL, NULL, NULL);
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)

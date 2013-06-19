@@ -41,7 +41,7 @@
 #include <errno.h>
 #include <poll.h>
 
-#include "log.h"
+#include "utils.h"
 #include "mooshika.h"
 
 #define CHUNK_SIZE 10
@@ -52,19 +52,18 @@
 #define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
 
 struct datalock {
-	struct ibv_mr *mr;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
 };
 
-void callback_send(msk_trans_t *trans, void *arg) {
+void callback_send(msk_trans_t *trans, msk_data_t *data, void *arg) {
 
 }
 
 void callback_disconnect(msk_trans_t *trans) {
 }
 
-void callback_recv(msk_trans_t *trans, void *arg) {
+void callback_recv(msk_trans_t *trans, msk_data_t *data, void *arg) {
 	struct datalock *datalock = arg;
 
 	pthread_mutex_lock(datalock->lock);
@@ -191,23 +190,24 @@ int main(int argc, char **argv) {
 		rdata[i].data=mrbuf+i*CHUNK_SIZE;
 		rdata[i].size = 0;
 		rdata[i].max_size=CHUNK_SIZE;
+		rdata[i].mr = mr;
                 if ((i-1) % NUM_SGE != 0)
                         rdata[i].next = &rdata[i+1];
                 else
                         rdata[i].next = NULL;
 	}
-	datalock.mr = mr;
 	datalock.lock = &lock;
 	datalock.cond = &cond;
 
 	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
 	wdata->data = mrbuf+RECV_NUM*NUM_SGE*CHUNK_SIZE;
+	wdata->mr = mr;
 	wdata->max_size = CHUNK_SIZE;
 
 
 	pthread_mutex_lock(&lock);
 	if (trans->server) // server receives, client sends
-		TEST_Z(msk_post_n_recv(trans, rdata, NUM_SGE, mr, callback_recv, &datalock));
+		TEST_Z(msk_post_n_recv(trans, rdata, NUM_SGE, callback_recv, NULL, &datalock));
 
 
 	if (trans->server) {
@@ -230,7 +230,7 @@ int main(int argc, char **argv) {
 		memcpy(rdata[1].data, "0123456", 8);
 		rdata[1].size = 8;
 
-		TEST_Z(msk_post_n_send(trans, rdata, NUM_SGE, mr, callback_recv, &datalock));
+		TEST_Z(msk_post_n_send(trans, rdata, NUM_SGE, callback_recv, NULL, &datalock));
 
 		TEST_Z(pthread_cond_wait(&cond, &lock));
 
