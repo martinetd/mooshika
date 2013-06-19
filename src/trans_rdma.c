@@ -1172,7 +1172,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		pthread_mutex_lock(&internals->lock);
 		internals->debug = attr->debug;
 		if (internals->run_threads == 0) {
-			internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : (attr->server ? 3 : 1);
+			internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : -1;
 			internals->worker_pool.q_size = attr->worker_queue_size ? attr->worker_queue_size : 20;
 		}
 		internals->run_threads++;

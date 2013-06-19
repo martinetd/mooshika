@@ -333,7 +333,6 @@ int main(int argc, char **argv) {
 
 	// writing to stdout is the limiting factor anyway
 	attr.worker_count = -1;
-	attr.worker_queue_size = 100;
 
 	TEST_Z(msk_init(&trans, &attr));
 
