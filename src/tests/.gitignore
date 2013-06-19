@@ -2,4 +2,3 @@ read_write
 bench_rdma
 nfsv4_client
 multiple_sge
-bench_send
