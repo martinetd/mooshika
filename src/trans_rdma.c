@@ -668,7 +668,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_DISCONNECTED:
-		ERROR_LOG("DISCONNECT EVENT...");
+		INFO_LOG(internals->debug, "DISCONNECT EVENT...");
 
 		ret = ECONNRESET;
 
@@ -734,7 +734,7 @@ static void *msk_cm_thread(void *arg) {
 				continue;
 			}
 			if (trans->state == MSK_CLOSED) {
-				ERROR_LOG("got a cm event on a closing trans?");
+				ERROR_LOG("got a cm event on a closed trans?");
 				continue;
 			}
 
@@ -809,7 +809,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 			ctx = (msk_ctx_t *)wc.wr_id;
 			msk_signal_worker(trans, ctx, wc.status, wc.opcode, flag);
 
-			if (trans->state != MSK_CLOSED) {
+			if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 				ERROR_LOG("cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
 				ret = wc.status;
 				break;
@@ -909,7 +909,7 @@ static void *msk_cq_thread(void *arg) {
 
 			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_CM_LOCK);
 			if (ret) {
-				if (trans->state != MSK_CLOSED) {
+				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					ERROR_LOG("something went wrong with our cq_event_handler");
 					trans->state = MSK_ERROR;
 					pthread_cond_broadcast(&trans->cm_cond);
@@ -1050,11 +1050,14 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 		/* FIXME: what to do on error? */
 		if (trans->state == MSK_CONNECTED || trans->state == MSK_CLOSED) {
 			pthread_mutex_lock(&trans->cm_lock);
+			if (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR)
+				trans->state = MSK_CLOSING;
+
 			if (trans->cm_id && trans->cm_id->verbs)
 				rdma_disconnect(trans->cm_id);
 
 			while (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR) {
-				ERROR_LOG("we're not closed yet, waiting for disconnect_event");
+				INFO_LOG(internals->debug, "we're not closed yet, waiting for disconnect_event");
 				pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
 			}
 			trans->state = MSK_CLOSED;
