@@ -393,8 +393,8 @@ int main(int argc, char **argv) {
 				print_help(argv);
 				exit(0);
 			case 'v':
-				c_attr.debug = 1;
-				s_attr.debug = 1;
+				c_attr.debug = c_attr.debug * 2 + 1;
+				s_attr.debug = c_attr.debug;
 				break;
 			case 'c':
 				c_attr.server = 0;

@@ -117,7 +117,7 @@ void print_help(char **argv) {
 		"Optional arguments:\n"
 		"	-p, --port port: port to use\n"
 		"	-m, --multi: server only, multithread/accept multiple connections\n"
-		"	-v, --verbose: enable verbose output\n"
+		"	-v, --verbose: enable verbose output (more v for more verbosity)\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
 }
 
@@ -291,7 +291,7 @@ int main(int argc, char **argv) {
 				print_help(argv);
 				exit(0);
 			case 'v':
-				attr.debug = 1;
+				attr.debug = attr.debug * 2 + 1;
 				break;
 			case 'c':
 				attr.server = 0;

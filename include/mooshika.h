@@ -123,6 +123,12 @@ struct msk_trans_attr {
 	struct ibv_pd *pd;		/**< Protection Domain pointer */
 };
 
+#define MSK_DEBUG_EVENT 0x0001
+#define MSK_DEBUG_SETUP 0x0002
+#define MSK_DEBUG_SEND  0x0004
+#define MSK_DEBUG_RECV  0x0008
+
+
 
 typedef void (*ctx_callback_t)(msk_trans_t *trans, msk_data_t *data, void *arg);
 
