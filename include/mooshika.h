@@ -95,6 +95,7 @@ struct msk_trans {
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	int server;			/**< 0 if client, number of connections to accept on server, -1 (MSK_SERVER_CHILD) if server's accepted connection */
+	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
 	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
 	msk_ctx_t *send_buf;		/**< pointer to actual context data */
 	msk_ctx_t *recv_buf;		/**< pointer to actual context data */
@@ -110,6 +111,7 @@ struct msk_trans_attr {
 	disconnect_callback_t disconnect_callback;
 	int debug;			/**< verbose output to stderr if set */
 	int server;			/**< 0 if client, number of connections to accept on server */
+	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int max_send_sge;		/**< Maximum number of s/g elements per send */

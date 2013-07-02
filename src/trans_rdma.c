@@ -670,8 +670,6 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	case RDMA_CM_EVENT_DISCONNECTED:
 		INFO_LOG(internals->debug, "DISCONNECT EVENT...");
 
-		ret = ECONNRESET;
-
 		// don't call completion again
 		if (trans->comp_channel)
 			msk_cq_delfd(trans);
@@ -683,6 +681,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 
 		if (trans->disconnect_callback)
 			trans->disconnect_callback(trans);
+
 		break;
 
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
@@ -718,7 +717,7 @@ static void *msk_cm_thread(void *arg) {
 
 		if (nfds == -1) {
 			ret = errno;
-			ERROR_LOG("epoll_pwait failed: %s (%d)", strerror(ret), ret);
+			ERROR_LOG("epoll_wait failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
@@ -751,14 +750,15 @@ static void *msk_cm_thread(void *arg) {
 				continue;
 			}
 			ret = msk_cma_event_handler(event->id, event);
-			if (ret == ECONNRESET && trans->state == MSK_CLOSED) {
-				pthread_mutex_lock(&trans->cm_lock);
-				pthread_cond_broadcast(&trans->cm_cond);
-				pthread_mutex_unlock(&trans->cm_lock);
-			} else if (ret && (trans->state != MSK_LISTENING || trans == event->id->context)) {
+
+			trans = event->id->context;
+			if (ret && (trans->state != MSK_LISTENING || trans == event->id->context)) {
 				ERROR_LOG("something happened in cma_event_handler: %d", ret);
 			}
 			rdma_ack_cm_event(event);
+
+			if (trans->state == MSK_CLOSED && trans->destroy_on_disconnect)
+				msk_destroy_trans(&trans);
 		}
 	}
 
@@ -1047,7 +1047,7 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 	msk_trans_t *trans = *ptrans;
 
 	if (trans) {
-		/* FIXME: what to do on error? */
+		trans->destroy_on_disconnect = 0;
 		if (trans->state == MSK_CONNECTED || trans->state == MSK_CLOSED) {
 			pthread_mutex_lock(&trans->cm_lock);
 			if (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR)
@@ -1165,6 +1165,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
 		trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 		trans->disconnect_callback = attr->disconnect_callback;
+		trans->destroy_on_disconnect = attr->destroy_on_disconnect;
 
 		if (attr->pd)
 			trans->pd = attr->pd;
