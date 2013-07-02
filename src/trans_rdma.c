@@ -29,6 +29,10 @@
  *
  */
 
+#if HAVE_CONFIG_H
+#  include <config.h>
+#endif
+
 #include <stdio.h>	//printf
 #include <stdlib.h>	//malloc
 #include <string.h>	//memcpy
@@ -49,6 +53,17 @@
 
 #include "utils.h"
 #include "mooshika.h"
+
+#ifdef HAVE_VALGRIND_MEMCHECK_H
+#  include <valgrind/memcheck.h>
+#  ifndef VALGRIND_MAKE_MEM_DEFINED
+#    warning "Valgrind support requested, but VALGRIND_MAKE_MEM_DEFINED not available"
+#  endif
+#endif
+#ifndef VALGRIND_MAKE_MEM_DEFINED
+#  define VALGRIND_MAKE_MEM_DEFINED(addr, len)
+#endif
+
 
 
 /**
@@ -828,11 +843,14 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 			msk_data_t *data = ctx->data;
 			while (data && len > data->max_size) {
 				data->size = data->max_size;
+				VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
 				len -= data->max_size;
 				data = data->next;
 			}
-			if (data)
+			if (data) {
 				data->size = len;
+				VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
+			}
 
 			msk_signal_worker(trans, ctx, wc.status, wc.opcode, flag);
 			break;

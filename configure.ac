@@ -50,6 +50,21 @@ if test x$enable_rmitm != xno ; then
 fi
 AM_CONDITIONAL(ENABLE_RMITM, test x$enable_rmitm = xyes)
 
+AC_ARG_WITH([valgrind],
+    AC_HELP_STRING([--with-valgrind],
+	[Enable Valgrind annotations (small runtime overhead, default NO)]))
+if test "x$with_valgrind" != "x" && test "x$with_valgrind" != "xno"; then
+    if test -d $with_valgrind; then
+        CFLAGS="$CFLAGS -I$with_valgrind/include"
+    fi
+    AC_CHECK_HEADER(valgrind/memcheck.h,
+        [AC_DEFINE(HAVE_VALGRIND_MEMCHECK_H, 1,
+            [Define to 1 if you have the <valgrind/memcheck.h> header file.])],
+        [AC_MSG_ERROR([Valgrind memcheck support requested, but <valgrind/memcheck.h> not found.])])
+fi
+
+
+
 #for exporting to spec file
 AC_SUBST(ac_configure_args)
 
