@@ -48,8 +48,8 @@
 #define DEFAULT_BLOCK_SIZE 1024*1024
 #define RECV_NUM 1
 
-#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); }} while (0)
-#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); }} while (0)
+#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
+#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
 struct cb_arg {
 	msk_data_t *ackdata;
@@ -96,11 +96,14 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 		if (n != pdata->size)
 			ERROR_LOG("Wrote less than what was actually received");
 
-		TEST_Z(msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg));
-		TEST_Z(msk_post_send(trans, cb_arg->ackdata, NULL, NULL, NULL));
+		if (msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg))
+			ERROR_LOG("post_recv failed");
+	        if (msk_post_send(trans, cb_arg->ackdata, NULL, NULL, NULL))
+			ERROR_LOG("post_send failed");
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		TEST_Z(msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg));
+		if(msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg))
+			ERROR_LOG("post_recv failed");
 
 		pthread_mutex_lock(cb_arg->lock);
 		pthread_cond_signal(cb_arg->cond);
