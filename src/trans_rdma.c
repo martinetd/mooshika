@@ -1568,6 +1568,11 @@ msk_trans_t *msk_accept_one_wait(msk_trans_t *trans, int msleep) {
 	clock_gettime(CLOCK_REALTIME, &ts);
 	ts.tv_sec += msleep / 1000;
 	ts.tv_nsec += (msleep % 1000) * 1000000;
+	if (ts.tv_nsec >= 1000000000) {
+		ts.tv_nsec -= 1000000000;
+		ts.tv_sec++;
+	}
+
 	return msk_accept_one_timedwait(trans, &ts);
 }
 

@@ -460,9 +460,10 @@ int main(int argc, char **argv) {
 		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 
 	signal(SIGINT, sigHandler);
+	signal(SIGHUP, sigHandler);
 
 	while (run_threads) {
-		child_trans = msk_accept_one_wait(s_trans, 100);
+		child_trans = msk_accept_one_wait(s_trans, 1000);
 
 		if (child_trans == NULL)
 			continue;
