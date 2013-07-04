@@ -134,7 +134,7 @@ struct msk_internals {
 static struct msk_internals *internals = NULL;
 
 
-void __attribute__ ((constructor)) my_init(void) {
+void __attribute__ ((constructor)) msk_internals_init(void) {
 	internals = malloc(sizeof(*internals));
 	if (!internals) {
 		ERROR_LOG("Out of memory");
@@ -146,7 +146,7 @@ void __attribute__ ((constructor)) my_init(void) {
 	pthread_mutex_init(&internals->lock, NULL);
 }
 
-void __attribute__ ((destructor)) my_fini(void) {
+void __attribute__ ((destructor)) msk_internals_fini(void) {
 
 	if (internals) {
 		internals->run_threads = 0;
