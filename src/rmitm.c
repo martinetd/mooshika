@@ -54,7 +54,7 @@
 #include "rmitm.h"
 
 #define DEFAULT_BLOCK_SIZE 1024*1024 // nfs page size
-#define RECV_NUM 4
+#define DEFAULT_RECV_NUM 16
 #define PACKET_HARD_MAX_LEN (64*1024-1)
 #define PACKET_TRUNC_LEN 1000
 
@@ -79,6 +79,7 @@ struct privatedata {
 struct thread_arg {
 	pcap_dumper_t *pcap_dumper;
 	uint32_t block_size;
+	uint32_t recv_num;
 };
 
 static int run_threads = 1;
@@ -163,7 +164,9 @@ void print_help(char **argv) {
 		"	-S addr port: listen on given address/port\n"
 		"Optional arguments:\n"
 		"	-w out.pcap: output file\n"
-		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
+		"	-b, --block-size size: size of packets to send (default: %u)\n"
+		"	-r, --recv-num num: number of packets we can recv at once (default: %u)\n",
+		DEFAULT_BLOCK_SIZE, DEFAULT_RECV_NUM);
 
 }
 
@@ -199,7 +202,7 @@ void *setup_thread(void *arg){
 	TEST_NZ(c_trans = child_trans->private_data);
 	TEST_NZ(thread_arg = c_trans->private_data);
 
-	const size_t mr_size = 2*(RECV_NUM+1)*(thread_arg->block_size+PACKET_HDR_LEN)*sizeof(char);
+	const size_t mr_size = 2*(thread_arg->recv_num+1)*(thread_arg->block_size+PACKET_HDR_LEN)*sizeof(char);
 
 	TEST_Z(msk_connect(c_trans));
 
@@ -212,8 +215,8 @@ void *setup_thread(void *arg){
 
 
 
-	TEST_NZ(data = malloc(2*RECV_NUM*sizeof(msk_data_t)));
-	TEST_NZ(datalock = malloc(2*RECV_NUM*sizeof(struct datalock)));
+	TEST_NZ(data = malloc(2*thread_arg->recv_num*sizeof(msk_data_t)));
+	TEST_NZ(datalock = malloc(2*thread_arg->recv_num*sizeof(struct datalock)));
 
 	memset(&pkt_hdr, 0, sizeof(pkt_hdr));
 
@@ -243,8 +246,8 @@ void *setup_thread(void *arg){
 	pkt_hdr.tcp.th_window = htons(100);
 	pkt_hdr.tcp.th_flags = THF_ACK;
 
-	for (i=0; i < 2*RECV_NUM; i++) {
-		if (i == RECV_NUM) { // change packet direction
+	for (i=0; i < 2*thread_arg->recv_num; i++) {
+		if (i == thread_arg->recv_num) { // change packet direction
 			pkt_hdr.ipv6.ip_src.s6_addr32[3] = ((struct sockaddr_in*)msk_get_dst_addr(c_trans))->sin_addr.s_addr;
 			pkt_hdr.tcp.th_sport = msk_get_dst_port(c_trans);
 			pkt_hdr.ipv6.ip_dst.s6_addr32[3] = ((struct sockaddr_in*)msk_get_src_addr(c_trans))->sin_addr.s_addr;
@@ -275,7 +278,7 @@ void *setup_thread(void *arg){
 	c_priv->o_trans = child_trans;
 
 	s_priv->first_datalock = datalock;
-	c_priv->first_datalock = datalock + RECV_NUM;
+	c_priv->first_datalock = datalock + thread_arg->recv_num;
 
 	memset(&lock, 0, sizeof(pthread_mutex_t));
 	memset(&cond, 0, sizeof(pthread_cond_t));
@@ -287,7 +290,7 @@ void *setup_thread(void *arg){
 	c_priv->pcond = &cond;
 
 
-	for (i=0; i<RECV_NUM; i++) {
+	for (i=0; i<thread_arg->recv_num; i++) {
 		TEST_Z(msk_post_recv(c_trans, (&c_priv->first_datalock[i])->data, callback_recv, callback_error, &c_priv->first_datalock[i]));
 		TEST_Z(msk_post_recv(child_trans, (&s_priv->first_datalock[i])->data, callback_recv, callback_error, &s_priv->first_datalock[i]));
 	}
@@ -343,6 +346,7 @@ int main(int argc, char **argv) {
 		{ "help",	no_argument,		0,		'h' },
 		{ "verbose",	no_argument,		0,		'v' },
 		{ "block-size",	required_argument,	0,		'b' },
+		{ "recv-num",	required_argument,	0,		'r' },
 		{ 0,		0,			0,		 0  }
 	};
 
@@ -354,13 +358,9 @@ int main(int argc, char **argv) {
 	s_attr.server = -1; // put an incorrect value to check if we're either client or server
 	c_attr.server = -1;
 	// sane values for optional or non-configurable elements
-	s_attr.rq_depth = RECV_NUM+1;
-	s_attr.sq_depth = RECV_NUM+1;
 	s_attr.max_recv_sge = 1;
 	s_attr.addr.sa_in.sin_family = AF_INET;
 	s_attr.disconnect_callback = callback_disconnect;
-	c_attr.rq_depth = RECV_NUM+1;
-	c_attr.sq_depth = RECV_NUM+1;
 	c_attr.max_recv_sge = 1;
 	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
@@ -369,7 +369,7 @@ int main(int argc, char **argv) {
 	pcap_file = "/tmp/rmitm.pcap";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvs:S:c:w:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvs:S:c:w:b:r:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -419,7 +419,6 @@ int main(int argc, char **argv) {
 			case 'b':
 				thread_arg.block_size = strtoul(optarg, &tmp_s, 0);
 				if (errno || thread_arg.block_size == 0) {
-					thread_arg.block_size = 0;
 					ERROR_LOG("Invalid block size, assuming default (%u)", DEFAULT_BLOCK_SIZE);
 					break;
 				}
@@ -427,6 +426,12 @@ int main(int argc, char **argv) {
 					set_size(&thread_arg.block_size, tmp_s);
 				}
 				INFO_LOG(c_attr.debug, "block size: %u", thread_arg.block_size);
+				break;
+			case 'r':
+				thread_arg.recv_num = strtoul(optarg, NULL, 0);
+
+				if (errno || thread_arg.recv_num == 0)
+					ERROR_LOG("Invalid recv_num, assuming default (%u)", DEFAULT_RECV_NUM);
 				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
@@ -442,6 +447,16 @@ int main(int argc, char **argv) {
 		exit(EINVAL);
 	}
 
+	if (thread_arg.block_size == 0)
+		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
+	if (thread_arg.recv_num == 0)
+		thread_arg.recv_num = DEFAULT_RECV_NUM;
+
+	s_attr.rq_depth = thread_arg.recv_num+1;
+	s_attr.sq_depth = thread_arg.recv_num+1;
+	c_attr.rq_depth = thread_arg.recv_num+1;
+	c_attr.sq_depth = thread_arg.recv_num+1;
+
 
 	// server init
 	TEST_Z(msk_init(&s_trans, &s_attr));
@@ -456,8 +471,6 @@ int main(int argc, char **argv) {
 	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &pcap_dumper));
 
 	thread_arg.pcap_dumper = pcap_dumper;
-	if (thread_arg.block_size == 0)
-		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 
 	signal(SIGINT, sigHandler);
 	signal(SIGHUP, sigHandler);
