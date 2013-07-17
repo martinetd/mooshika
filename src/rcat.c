@@ -121,6 +121,7 @@ void print_help(char **argv) {
 		"	-p, --port port: port to use\n"
 		"	-m, --multi: server only, multithread/accept multiple connections\n"
 		"	-v, --verbose: enable verbose output (more v for more verbosity)\n"
+		"	-q, --quiet: don't display connection messages\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
 }
 
@@ -251,6 +252,7 @@ int main(int argc, char **argv) {
 		{ "help",	no_argument,		0,		'h' },
 		{ "multi",	no_argument,		0,		'm' },
 		{ "verbose",	no_argument,		0,		'v' },
+		{ "quiet",	no_argument,		0,		'q' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ 0,		0,			0,		 0  }
 	};
@@ -264,12 +266,13 @@ int main(int argc, char **argv) {
 
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
+	attr.debug = 1;
 	attr.rq_depth = RECV_NUM+2;
 	attr.addr.sa_in.sin_family = AF_INET;
 	attr.addr.sa_in.sin_port = htons(1235);
 	attr.disconnect_callback = callback_disconnect;
 
-	while ((op = getopt_long(argc, argv, "@hvmsb:S:c:p:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -288,7 +291,7 @@ int main(int argc, char **argv) {
 				if (tmp_s[0] != 0) {
 					set_size(&thread_arg.block_size, tmp_s);
 				}
-				INFO_LOG(attr.debug, "block size: %u", thread_arg.block_size);
+				INFO_LOG(attr.debug > 1, "block size: %u", thread_arg.block_size);
 				break;
 			case 'h':
 				print_help(argv);
@@ -296,9 +299,12 @@ int main(int argc, char **argv) {
 			case 'v':
 				attr.debug = attr.debug * 2 + 1;
 				break;
+			case 'q':
+				attr.debug = 0;
+				break;
 			case 'c':
 				attr.server = 0;
-				host = gethostbyname(optarg);
+				TEST_NZ(host = gethostbyname(optarg));
 				//FIXME: if (host->h_addrtype == AF_INET6) {
 				memcpy(&attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
@@ -308,7 +314,7 @@ int main(int argc, char **argv) {
 				break;
 			case 'S':
 				attr.server = 10;
-				host = gethostbyname(optarg);
+				TEST_NZ(host = gethostbyname(optarg));
 				//FIXME: if (host->h_addrtype == AF_INET6) {
 				memcpy(&attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;

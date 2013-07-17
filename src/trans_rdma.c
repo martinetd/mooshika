@@ -1482,6 +1482,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
 		if (trans->state == MSK_CONNECTED) {
 			msk_cq_addfd(trans);
 		} else {
+			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Accept failed");
 			ret = ECONNRESET;
 			break;
 		}

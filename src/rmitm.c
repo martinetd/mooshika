@@ -165,7 +165,9 @@ void print_help(char **argv) {
 		"Optional arguments:\n"
 		"	-w out.pcap: output file\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n"
-		"	-r, --recv-num num: number of packets we can recv at once (default: %u)\n",
+		"	-r, --recv-num num: number of packets we can recv at once (default: %u)\n"
+		"	-v, --verbose: verbose, more v for more verbosity\n"
+		"	-q, --quiet: quiet output\n",
 		DEFAULT_BLOCK_SIZE, DEFAULT_RECV_NUM);
 
 }
@@ -345,6 +347,7 @@ int main(int argc, char **argv) {
 		{ "server",	required_argument,	0,		's' },
 		{ "help",	no_argument,		0,		'h' },
 		{ "verbose",	no_argument,		0,		'v' },
+		{ "quiet",	no_argument,		0,		'q' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ "recv-num",	required_argument,	0,		'r' },
 		{ 0,		0,			0,		 0  }
@@ -358,6 +361,8 @@ int main(int argc, char **argv) {
 	s_attr.server = -1; // put an incorrect value to check if we're either client or server
 	c_attr.server = -1;
 	// sane values for optional or non-configurable elements
+	s_attr.debug = 1;
+	c_attr.debug = 1;
 	s_attr.max_recv_sge = 1;
 	s_attr.addr.sa_in.sin_family = AF_INET;
 	s_attr.disconnect_callback = callback_disconnect;
@@ -395,6 +400,10 @@ int main(int argc, char **argv) {
 			case 'v':
 				c_attr.debug = c_attr.debug * 2 + 1;
 				s_attr.debug = c_attr.debug;
+				break;
+			case 'q':
+				c_attr.debug = 0;
+				s_attr.debug = 0;
 				break;
 			case 'c':
 				c_attr.server = 0;
