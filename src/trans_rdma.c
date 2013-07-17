@@ -772,11 +772,11 @@ static void *msk_cm_thread(void *arg) {
  * @return 0 on success, work completion status if not 0
  */
 static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
-	struct ibv_wc wc;
+	struct ibv_wc wc[12];
 	struct ibv_cq *ev_cq;
 	void *ev_ctx;
 	msk_ctx_t* ctx;
-	int ret;
+	int ret, npoll, i;
 
 	ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
 	if (ret) {
@@ -796,68 +796,69 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_req_notify_cq failed: %d.", ret);
 	}
 
-	while ((ret = ibv_poll_cq(trans->cq, 1, &wc)) == 1) {
-		ret = 0;
+	while (ret == 0 && (npoll = ibv_poll_cq(trans->cq, 12, wc)) > 0) {
+		for (i=0; i < npoll; i++) {
 
-		if (trans->bad_recv_wr) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that recv");
-		}
-		if (trans->bad_send_wr) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
-		}
-		if (wc.status) {
-			ctx = (msk_ctx_t *)wc.wr_id;
-			msk_signal_worker(trans, ctx, wc.status, wc.opcode, flag);
+			if (trans->bad_recv_wr) {
+				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that recv");
+			}
+			if (trans->bad_send_wr) {
+				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
+			}
+			if (wc[i].status) {
+				ctx = (msk_ctx_t *)wc[i].wr_id;
+				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
 
-			if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc.status), wc.status);
-				ret = wc.status;
+				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
+					INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
+					ret = wc[i].status;
+					continue;
+				}
+				continue;
+			}
+
+			switch (wc[i].opcode) {
+			case IBV_WC_SEND:
+			case IBV_WC_RDMA_WRITE:
+			case IBV_WC_RDMA_READ:
+				INFO_LOG(internals->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc[i].opcode);
+
+				ctx = (msk_ctx_t *)wc[i].wr_id;
+				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
 				break;
-			}
-			continue;
-		}
 
-		switch (wc.opcode) {
-		case IBV_WC_SEND:
-		case IBV_WC_RDMA_WRITE:
-		case IBV_WC_RDMA_READ:
-			INFO_LOG(internals->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc.opcode);
+			case IBV_WC_RECV:
+			case IBV_WC_RECV_RDMA_WITH_IMM:
+				INFO_LOG(internals->debug & MSK_DEBUG_RECV, "WC_RECV");
 
-			ctx = (msk_ctx_t *)wc.wr_id;
-			msk_signal_worker(trans, ctx, wc.status, wc.opcode, flag);
-			break;
+				if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
+					//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
+					INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
+				}
 
-		case IBV_WC_RECV:
-		case IBV_WC_RECV_RDMA_WITH_IMM:
-			INFO_LOG(internals->debug & MSK_DEBUG_RECV, "WC_RECV");
-
-			if (wc.wc_flags & IBV_WC_WITH_IMM) {
-				//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc.imm_data));
-			}
-
-			ctx = (msk_ctx_t *)wc.wr_id;
+				ctx = (msk_ctx_t *)wc[i].wr_id;
 			
-			// fill all the sizes in case of multiple sge
-			int len = wc.byte_len;
-			msk_data_t *data = ctx->data;
-			while (data && len > data->max_size) {
-				data->size = data->max_size;
-				VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
-				len -= data->max_size;
-				data = data->next;
-			}
-			if (data) {
-				data->size = len;
-				VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
-			}
+				// fill all the sizes in case of multiple sge
+				int len = wc[i].byte_len;
+				msk_data_t *data = ctx->data;
+				while (data && len > data->max_size) {
+					data->size = data->max_size;
+					VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
+					len -= data->max_size;
+					data = data->next;
+				}
+				if (data) {
+					data->size = len;
+					VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
+				}
 
-			msk_signal_worker(trans, ctx, wc.status, wc.opcode, flag);
-			break;
+				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
+				break;
 
-		default:
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "unknown opcode: %d", wc.opcode);
-			return EINVAL;
+			default:
+				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "unknown opcode: %d", wc[i].opcode);
+				ret = EINVAL;
+			}
 		}
 	}
 
