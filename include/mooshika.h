@@ -59,6 +59,17 @@ typedef union sockaddr_union {
 	struct sockaddr_storage sa_stor;
 } sockaddr_union_t;
 
+struct msk_stats {
+	uint64_t rx_bytes;
+	uint64_t rx_pkt;
+	uint64_t tx_bytes;
+	uint64_t tx_pkt;
+	uint64_t err;
+	/* timespecs only used debug has MSK_DEBUG_SPEED */
+	struct timespec time_callback;
+	struct timespec time_compevent;
+};
+
 typedef void (*disconnect_callback_t) (msk_trans_t *trans);
 
 #define MSK_CLIENT 0
@@ -96,6 +107,7 @@ struct msk_trans {
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	int server;			/**< 0 if client, number of connections to accept on server, -1 (MSK_SERVER_CHILD) if server's accepted connection */
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
+	uint32_t debug;
 	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
 	msk_ctx_t *send_buf;		/**< pointer to actual context data */
 	msk_ctx_t *recv_buf;		/**< pointer to actual context data */
@@ -105,6 +117,7 @@ struct msk_trans {
 	pthread_cond_t cm_cond;		/**< cond for connection events */
 	struct ibv_recv_wr *bad_recv_wr;
 	struct ibv_send_wr *bad_send_wr;
+	struct msk_stats stats;
 };
 
 struct msk_trans_attr {
@@ -127,7 +140,7 @@ struct msk_trans_attr {
 #define MSK_DEBUG_SETUP 0x0002
 #define MSK_DEBUG_SEND  0x0004
 #define MSK_DEBUG_RECV  0x0008
-
+#define MSK_DEBUG_SPEED 0x8000
 
 
 typedef void (*ctx_callback_t)(msk_trans_t *trans, msk_data_t *data, void *arg);

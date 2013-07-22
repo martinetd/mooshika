@@ -41,6 +41,8 @@
 #include <getopt.h>
 #include <errno.h>
 #include <poll.h>
+#include <inttypes.h> // PRIu64
+
 
 #include "utils.h"
 #include "mooshika.h"
@@ -59,6 +61,7 @@ struct cb_arg {
 
 struct thread_arg {
 	int mt_server;
+	int stats;
 	uint32_t block_size;
 };
 
@@ -77,6 +80,8 @@ void callback_disconnect(msk_trans_t *trans) {
 
 
 void callback_error(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
+	if (trans->state != MSK_CLOSING)
+		printf("Got an error! What should we do?!\n");
 }
 
 void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -122,6 +127,7 @@ void print_help(char **argv) {
 		"	-m, --multi: server only, multithread/accept multiple connections\n"
 		"	-v, --verbose: enable verbose output (more v for more verbosity)\n"
 		"	-q, --quiet: don't display connection messages\n"
+		"	-d, --stats: show connection stats on close\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
 }
 
@@ -217,6 +223,21 @@ void* handle_trans(void *arg) {
 		pthread_mutex_unlock(&lock);
 	}	
 
+	if (thread_arg->stats)
+		printf("stats:\n"
+			"	tx_bytes\ttx_pkt\n"
+			"	%10"PRIu64"\t%"PRIu64"\n"
+			"	rx_bytes\trx_pkt\n"
+			"	%10"PRIu64"\t%"PRIu64"\n"
+			"	error: %"PRIu64"\n"
+			"	callback time:   %lu.%06lus\n"
+			"	completion time: %lu.%06lus\n",
+			trans->stats.tx_bytes, trans->stats.tx_pkt,
+			trans->stats.rx_bytes, trans->stats.rx_pkt,
+			trans->stats.err,
+			trans->stats.time_callback.tv_sec, trans->stats.time_callback.tv_nsec,
+			trans->stats.time_compevent.tv_sec, trans->stats.time_compevent.tv_nsec);
+
 
 	msk_destroy_trans(&trans);
 
@@ -253,6 +274,7 @@ int main(int argc, char **argv) {
 		{ "multi",	no_argument,		0,		'm' },
 		{ "verbose",	no_argument,		0,		'v' },
 		{ "quiet",	no_argument,		0,		'q' },
+		{ "stats",	no_argument,		0,		'd' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ 0,		0,			0,		 0  }
 	};
@@ -272,7 +294,7 @@ int main(int argc, char **argv) {
 	attr.addr.sa_in.sin_port = htons(1235);
 	attr.disconnect_callback = callback_disconnect;
 
-	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:d", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -298,6 +320,9 @@ int main(int argc, char **argv) {
 				exit(0);
 			case 'v':
 				attr.debug = attr.debug * 2 + 1;
+				break;
+			case 'd':
+				thread_arg.stats = 1;
 				break;
 			case 'q':
 				attr.debug = 0;
@@ -339,6 +364,8 @@ int main(int argc, char **argv) {
 
 	if (thread_arg.block_size == 0)
 		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
+	if (thread_arg.stats)
+		attr.debug |= MSK_DEBUG_SPEED;
 
 	// writing to stdout is the limiting factor anyway
 	attr.worker_count = -1;

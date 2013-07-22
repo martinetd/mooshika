@@ -294,10 +294,17 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 }
 
 static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
+	struct timespec ts_start, ts_end;
 	if (status) {
-		if (ctx && ctx->err_callback)
+		if (ctx && ctx->err_callback) {
+			if (trans->debug & MSK_DEBUG_SPEED)
+				clock_gettime(CLOCK_MONOTONIC, &ts_start);
 			ctx->err_callback(trans, ctx->data, ctx->callback_arg);
-
+			if (trans->debug & MSK_DEBUG_SPEED) {
+				clock_gettime(CLOCK_MONOTONIC, &ts_end);
+				sub_timespec(trans->stats.time_callback, ts_start, ts_end);
+			}
+		}
 		pthread_mutex_lock(&trans->ctx_lock);
 		ctx->used = MSK_CTX_FREE;
 		pthread_cond_broadcast(&trans->ctx_cond);
@@ -309,8 +316,15 @@ static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, 
 		case IBV_WC_SEND:
 		case IBV_WC_RDMA_WRITE:
 		case IBV_WC_RDMA_READ:
-			if (ctx->callback)
+			if (ctx->callback) {
+				if (trans->debug & MSK_DEBUG_SPEED)
+					clock_gettime(CLOCK_MONOTONIC, &ts_start);
 				ctx->callback(trans, ctx->data, ctx->callback_arg);
+				if (trans->debug & MSK_DEBUG_SPEED) {
+					clock_gettime(CLOCK_MONOTONIC, &ts_end);
+					sub_timespec(trans->stats.time_callback, ts_start, ts_end);
+				}
+			}
 
 			pthread_mutex_lock(&trans->ctx_lock);
 			ctx->used = MSK_CTX_FREE;
@@ -320,8 +334,15 @@ static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, 
 
 		case IBV_WC_RECV:
 		case IBV_WC_RECV_RDMA_WITH_IMM:
-			if (ctx->callback)
+			if (ctx->callback) {
+				if (trans->debug & MSK_DEBUG_SPEED)
+					clock_gettime(CLOCK_MONOTONIC, &ts_start);
 				ctx->callback(trans, ctx->data, ctx->callback_arg);
+				if (trans->debug & MSK_DEBUG_SPEED) {
+					clock_gettime(CLOCK_MONOTONIC, &ts_end);
+					sub_timespec(trans->stats.time_callback, ts_start, ts_end);
+				}
+			}
 
 			pthread_mutex_lock(&trans->ctx_lock);
 			ctx->used = MSK_CTX_FREE;
@@ -464,7 +485,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 	struct msk_worker_data *wd;
 	int i;
 
-	INFO_LOG(internals->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
+	INFO_LOG(trans->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
 
 	// Don't signal and do it directly if no worker
 	if (internals->worker_pool.worker_count == -1) {
@@ -489,7 +510,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 		if (flag & MSK_HAS_TRANS_CTX_LOCK)
 			pthread_mutex_unlock(&trans->ctx_lock);
 		if (eventfd_read(internals->worker_pool.m_efd, &n) || n > INT_MAX) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
 		} else {
 			printf("master: %d\n", (int)n);
 			atomic_sub(internals->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
@@ -502,7 +523,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 
 	do {
 		if (internals->run_threads == 0) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Had something to do but threads stopping?");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Had something to do but threads stopping?");
 			break;
 		}
 
@@ -519,7 +540,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 		wd->opcode = opcode;
 
 		if (eventfd_write(internals->worker_pool.w_efd, 1))
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
 
 	} while (0);
 
@@ -540,7 +561,7 @@ static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
 	ret = fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 	if (ret < 0) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Failed to make the comp channel nonblock");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Failed to make the comp channel nonblock");
 		return ret;
 	}
 
@@ -550,7 +571,7 @@ static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
 	ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &ev);
 	if (ret == -1) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Failed to add fd to epoll: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Failed to add fd to epoll: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
@@ -595,18 +616,18 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	int ret = 0;
 	msk_trans_t *trans = cm_id->context;
 
-	INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "cma_event type %s", rdma_event_str(event->event));
+	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "cma_event type %s", rdma_event_str(event->event));
 
 	if (trans->bad_recv_wr) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that recv");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Something was bad on that recv");
 	}
 	if (trans->bad_send_wr) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
 	}
 
 	switch (event->event) {
 	case RDMA_CM_EVENT_ADDR_RESOLVED:
-		INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "ADDR_RESOLVED");
+		INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "ADDR_RESOLVED");
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ADDR_RESOLVED;
 		pthread_cond_broadcast(&trans->cm_cond);
@@ -614,7 +635,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
-		INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "ROUTE_RESOLVED");
+		INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "ROUTE_RESOLVED");
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ROUTE_RESOLVED;
 		pthread_cond_broadcast(&trans->cm_cond);
@@ -622,10 +643,10 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_ESTABLISHED:
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ESTABLISHED");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ESTABLISHED");
 		pthread_mutex_lock(&trans->cm_lock);
 		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 			trans->state = MSK_ERROR;
 		} else {
 			trans->state = MSK_CONNECTED;
@@ -636,7 +657,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_CONNECT_REQUEST:
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "CONNECT_REQUEST");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "CONNECT_REQUEST");
 		//even if the cm_id is new, trans is the good parent's trans.
 		pthread_mutex_lock(&trans->cm_lock);
 
@@ -648,7 +669,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 
 		if (i == trans->server) {
 			pthread_mutex_unlock(&trans->cm_lock);
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not pile up new connection requests' cm_id!");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not pile up new connection requests' cm_id!");
 			ret = ENOBUFS;
 			break;
 		}
@@ -665,7 +686,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 	case RDMA_CM_EVENT_UNREACHABLE:
 	case RDMA_CM_EVENT_REJECTED:
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "cma event %s, error %d",
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cma event %s, error %d",
 			rdma_event_str(event->event), event->status);
 		pthread_mutex_lock(&trans->cm_lock);
 		trans->state = MSK_ERROR;
@@ -674,7 +695,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_DISCONNECTED:
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "DISCONNECT EVENT...");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "DISCONNECT EVENT...");
 
 		// don't call completion again
 		if (trans->comp_channel)
@@ -691,12 +712,12 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		break;
 
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "cma detected device removal!!!!");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cma detected device removal!!!!");
 		ret = ENODEV;
 		break;
 
 	default:
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "unhandled event: %s, ignoring\n",
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "unhandled event: %s, ignoring\n",
 			rdma_event_str(event->event));
 		break;
 	}
@@ -730,36 +751,36 @@ static void *msk_cm_thread(void *arg) {
 		for (n = 0; n < nfds; ++n) {
 			trans = (msk_trans_t*)epoll_events[n].data.ptr;
 			if (!trans) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
 				continue;
 			}
 
 			if (epoll_events[n].events == EPOLLERR || epoll_events[n].events == EPOLLHUP) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll error or hup (%d)", epoll_events[n].events);
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "epoll error or hup (%d)", epoll_events[n].events);
 				continue;
 			}
 			if (trans->state == MSK_CLOSED) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "got a cm event on a closed trans?");
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got a cm event on a closed trans?");
 				continue;
 			}
 
 			if (!trans->event_channel) {
 				if (trans->state != MSK_CLOSED)
-					INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "no event channel? :D");
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "no event channel? :D");
 				continue;
 			}
 
 			ret = rdma_get_cm_event(trans->event_channel, &event);
 			if (ret) {
 				ret = errno;
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_get_cm_event failed: %d.", ret);
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_get_cm_event failed: %d.", ret);
 				continue;
 			}
 			ret = msk_cma_event_handler(event->id, event);
 
 			trans = event->id->context;
 			if (ret && (trans->state != MSK_LISTENING || trans == event->id->context)) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "something happened in cma_event_handler: %d", ret);
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "something happened in cma_event_handler: %d", ret);
 			}
 			rdma_ack_cm_event(event);
 
@@ -781,44 +802,45 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 	struct ibv_wc wc[NUM_WQ_PER_POLL];
 	struct ibv_cq *ev_cq;
 	void *ev_ctx;
-	msk_ctx_t* ctx;
+	msk_ctx_t *ctx;
+	msk_data_t *data;
 	int ret, npoll, i;
+	uint32_t len;
 
 	ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
 	if (ret) {
 		ret = errno;
 		if (ret != EAGAIN)
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_get_cq_event failed: %d", ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_get_cq_event failed: %d", ret);
 		return ret;
 	}
 	if (ev_cq != trans->cq) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Unknown cq,");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Unknown cq,");
 		ibv_ack_cq_events(ev_cq, 1);
 		return EINVAL;
 	}
 
 	ret = ibv_req_notify_cq(trans->cq, 0);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_req_notify_cq failed: %d.", ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_req_notify_cq failed: %d.", ret);
 	}
 
 	while (ret == 0 && (npoll = ibv_poll_cq(trans->cq, NUM_WQ_PER_POLL, wc)) > 0) {
 		for (i=0; i < npoll; i++) {
-
 			if (trans->bad_recv_wr) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that recv");
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Something was bad on that recv");
 			}
 			if (trans->bad_send_wr) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
 			}
 			if (wc[i].status) {
-				ctx = (msk_ctx_t *)wc[i].wr_id;
-				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
+				trans->stats.err++;
+				msk_signal_worker(trans, (msk_ctx_t *)wc[i].wr_id, wc[i].status, -1, flag);
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
-					INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
 					ret = wc[i].status;
-					continue;
+
 				}
 				continue;
 			}
@@ -827,26 +849,41 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 			case IBV_WC_SEND:
 			case IBV_WC_RDMA_WRITE:
 			case IBV_WC_RDMA_READ:
-				INFO_LOG(internals->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc[i].opcode);
+				INFO_LOG(trans->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc[i].opcode);
+				trans->stats.tx_pkt++;
 
 				ctx = (msk_ctx_t *)wc[i].wr_id;
+
+				data = ctx->data;
+				while (data) {
+					trans->stats.tx_bytes += data->size;
+					data = data->next;
+				}
+
+				if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
+					//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
+				}
+
 				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
 				break;
 
 			case IBV_WC_RECV:
 			case IBV_WC_RECV_RDMA_WITH_IMM:
-				INFO_LOG(internals->debug & MSK_DEBUG_RECV, "WC_RECV");
+				INFO_LOG(trans->debug & MSK_DEBUG_RECV, "WC_RECV");
+				trans->stats.rx_pkt++;
+				trans->stats.rx_bytes += wc[i].byte_len;
 
 				if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
 					//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
-					INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
 				}
 
 				ctx = (msk_ctx_t *)wc[i].wr_id;
 			
 				// fill all the sizes in case of multiple sge
-				int len = wc[i].byte_len;
-				msk_data_t *data = ctx->data;
+				len = wc[i].byte_len;
+				data = ctx->data;
 				while (data && len > data->max_size) {
 					data->size = data->max_size;
 					VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
@@ -856,13 +893,15 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 				if (data) {
 					data->size = len;
 					VALGRIND_MAKE_MEM_DEFINED(data->data, data->size);
+				} else if (len) {
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "received more than could fit? %d leftover bytes", len);
 				}
 
 				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
 				break;
 
 			default:
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "unknown opcode: %d", wc[i].opcode);
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "unknown opcode: %d", wc[i].opcode);
 				ret = EINVAL;
 			}
 		}
@@ -880,6 +919,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 static void *msk_cq_thread(void *arg) {
 	msk_trans_t *trans;
 	struct epoll_event epoll_events[EPOLL_MAX_EVENTS];
+	struct timespec ts_start, ts_end;
 	int nfds, n;
 	int ret;
 
@@ -898,14 +938,16 @@ static void *msk_cq_thread(void *arg) {
 			trans = (msk_trans_t*)epoll_events[n].data.ptr;
 
 			if (!trans) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
 				continue;
 			}
 
 			if (epoll_events[n].events == EPOLLERR || epoll_events[n].events == EPOLLHUP) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll error or hup (%d)", epoll_events[n].events);
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "epoll error or hup (%d)", epoll_events[n].events);
 				continue;
 			}
+			if (trans->debug & MSK_DEBUG_SPEED)
+				clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
 			pthread_mutex_lock(&trans->cm_lock);
 			if (trans->state == MSK_CLOSED || trans->state == MSK_ERROR) {
@@ -917,12 +959,17 @@ static void *msk_cq_thread(void *arg) {
 			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_CM_LOCK);
 			if (ret) {
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
-					INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "something went wrong with our cq_event_handler");
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "something went wrong with our cq_event_handler");
 					trans->state = MSK_ERROR;
 					pthread_cond_broadcast(&trans->cm_cond);
 				}
 			}
 			pthread_mutex_unlock(&trans->cm_lock);
+
+			if (trans->debug & MSK_DEBUG_SPEED) {
+				clock_gettime(CLOCK_MONOTONIC, &ts_end);
+				sub_timespec(trans->stats.time_compevent, ts_start, ts_end);
+			}
 		}
 	}
 
@@ -940,7 +987,7 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 	struct msk_ctx *ctx;
 	int i, wait, ret;
 
-	INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "flushing %p", trans);
+	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "flushing %p", trans);
 
 	pthread_mutex_lock(&trans->cm_lock);
 	pthread_mutex_lock(&trans->ctx_lock);
@@ -951,7 +998,7 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 		} while (ret == 0);
 
 		if (ret != EAGAIN)
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "couldn't flush pending data in cq: %d", ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't flush pending data in cq: %d", ret);
 	}
 
 	for (i = 0, ctx = trans->recv_buf;
@@ -1060,7 +1107,7 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 				rdma_disconnect(trans->cm_id);
 
 			while (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR) {
-				INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "we're not closed yet, waiting for disconnect_event");
+				INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "we're not closed yet, waiting for disconnect_event");
 				pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
 			}
 			trans->state = MSK_CLOSED;
@@ -1162,6 +1209,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		trans->addr.sa_stor = attr->addr.sa_stor;
 
 		trans->server = attr->server;
+		trans->debug = attr->debug;
 		trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
 		trans->sq_depth = attr->sq_depth ? attr->sq_depth : 50;
 		trans->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
@@ -1175,27 +1223,27 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 
 		ret = pthread_mutex_init(&trans->cm_lock, NULL);
 		if (ret) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 		ret = pthread_cond_init(&trans->cm_cond, NULL);
 		if (ret) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 		ret = pthread_mutex_init(&trans->ctx_lock, NULL);
 		if (ret) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 		ret = pthread_cond_init(&trans->ctx_cond, NULL);
 		if (ret) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
 		pthread_mutex_lock(&internals->lock);
-		internals->debug = attr->debug;
+		internals->debug = trans->debug;
 		if (internals->run_threads == 0) {
 			internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : -1;
 
@@ -1210,7 +1258,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		ret = msk_spawn_worker_threads();
 
 		if (ret) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not start worker threads: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not start worker threads: %s (%d)", strerror(ret), ret);
 			break;
 		}
 	} while (0);
@@ -1250,7 +1298,7 @@ static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
 
 	if (rdma_create_qp(cm_id, trans->pd, &init_attr)) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_create_qp: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_create_qp: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
@@ -1268,20 +1316,20 @@ static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
 static int msk_setup_qp(msk_trans_t *trans) {
 	int ret;
 
-	INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "trans: %p", trans);
+	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "trans: %p", trans);
 
 	if (!trans->pd)
 		trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
 	if (!trans->pd) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_alloc_pd failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_alloc_pd failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
 	trans->comp_channel = ibv_create_comp_channel(trans->cm_id->verbs);
 	if (!trans->comp_channel) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_create_comp_channel failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_create_comp_channel failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_qp(trans);
 		return ret;
 	}
@@ -1290,26 +1338,26 @@ static int msk_setup_qp(msk_trans_t *trans) {
 				  trans, trans->comp_channel, 0);
 	if (!trans->cq) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_create_cq failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_create_cq failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_qp(trans);
 		return ret;
 	}
 
 	ret = ibv_req_notify_cq(trans->cq, 0);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_req_notify_cq failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_req_notify_cq failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_qp(trans);
 		return ret;
 	}
 
 	ret = msk_create_qp(trans, trans->cm_id);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "our own create_qp failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "our own create_qp failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_qp(trans);
 		return ret;
 	}
 
-	INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "created qp %p", trans->qp);
+	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "created qp %p", trans->qp);
 	return 0;
 }
 
@@ -1320,14 +1368,14 @@ static int msk_setup_qp(msk_trans_t *trans) {
 static int msk_setup_buffer(msk_trans_t *trans) {
 	trans->recv_buf = malloc(trans->rq_depth * (sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge)));
 	if (!trans->recv_buf) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->recv_buf");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
 	memset(trans->recv_buf, 0, trans->rq_depth * (sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge)));
 
 	trans->send_buf = malloc(trans->sq_depth * (sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge)));
 	if (!trans->send_buf) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->send_buf");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->send_buf");
 		return ENOMEM;
 	}
 	memset(trans->send_buf, 0, trans->sq_depth * (sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge)));
@@ -1346,12 +1394,12 @@ int msk_bind_server(msk_trans_t *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_INIT) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
 		return EINVAL;
 	}
 
 	if (trans->server <= 0) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Must be on server side to call this function");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Must be on server side to call this function");
 		return EINVAL;
 	}
 
@@ -1360,11 +1408,11 @@ int msk_bind_server(msk_trans_t *trans) {
 	char str[INET_ADDRSTRLEN];
 
 	inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
-	INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
+	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
 
 	trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
 	if (!trans->conn_requests) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not allocate conn_requests buffer");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not allocate conn_requests buffer");
 		return ENOMEM;
 	}
 
@@ -1382,14 +1430,14 @@ int msk_bind_server(msk_trans_t *trans) {
 	ret = rdma_listen(trans->cm_id, trans->server);
 	if (ret) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_listen failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_listen failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
 	trans->state = MSK_LISTENING;
 
 	if ((ret = msk_check_create_epoll_thread(&internals->cm_thread, msk_cm_thread, trans, &internals->cm_epollfd))) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 	msk_cm_addfd(trans);
@@ -1403,7 +1451,7 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 	int ret;
 
 	if (!trans) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "malloc failed");
+		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "malloc failed");
 		return NULL;
 	}
 
@@ -1421,25 +1469,25 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 
 	ret = pthread_mutex_init(&trans->cm_lock, NULL);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
 		return NULL;
 	}
 	ret = pthread_cond_init(&trans->cm_cond, NULL);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
 		return NULL;
 	}
 	ret = pthread_mutex_init(&trans->ctx_lock, NULL);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
 		return NULL;
 	}
 	ret = pthread_cond_init(&trans->ctx_cond, NULL);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
 		return NULL;
 	}
@@ -1463,7 +1511,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_CONNECT_REQUEST) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans isn't from a connection request?");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans isn't from a connection request?");
 		return EINVAL;
 	}
 
@@ -1479,18 +1527,18 @@ int msk_finalize_accept(msk_trans_t *trans) {
 		ret = rdma_accept(trans->cm_id, &conn_param);
 		if (ret) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_accept failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_accept failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 		while (trans->state == MSK_CONNECT_REQUEST) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
+			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 
 		if (trans->state == MSK_CONNECTED) {
 			msk_cq_addfd(trans);
 		} else {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Accept failed");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Accept failed");
 			ret = ECONNRESET;
 			break;
 		}
@@ -1517,7 +1565,7 @@ msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *absti
 	int i, ret;
 
 	if (!trans || trans->state != MSK_LISTENING) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans isn't listening (after bind_server)?");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans isn't listening (after bind_server)?");
 		return NULL;
 	}
 
@@ -1530,7 +1578,7 @@ msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *absti
 				break;
 
 		if (i == trans->server) {
-			INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "Waiting for a connection to come in");
+			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Waiting for a connection to come in");
 			if (abstime)
 				ret = pthread_cond_timedwait(&trans->cm_cond, &trans->cm_lock, abstime);
 			else
@@ -1549,18 +1597,18 @@ msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *absti
 		return NULL;
 	}
 
-	INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "Got a connection request - creating child");
+	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a connection request - creating child");
 
 	child_trans = clone_trans(trans, cm_id);
 
 	if (child_trans) {
 		if ((ret = msk_setup_qp(child_trans))) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not setup child trans's qp: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not setup child trans's qp: %s (%d)", strerror(ret), ret);
 			msk_destroy_trans(&child_trans);
 			return NULL;
 		}
 		if ((ret = msk_setup_buffer(child_trans))) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not setup child trans's buffer: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not setup child trans's buffer: %s (%d)", strerror(ret), ret);
 			msk_destroy_trans(&child_trans);
 			return NULL;
 		}
@@ -1599,17 +1647,17 @@ static int msk_bind_client(msk_trans_t *trans) {
 		ret = rdma_resolve_addr(trans->cm_id, NULL, (struct sockaddr*) &trans->addr, trans->timeout);
 		if (ret) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_resolve_addr failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_resolve_addr failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
 
 		while (trans->state == MSK_INIT) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
+			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 		if (trans->state != MSK_ADDR_RESOLVED) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not resolve addr");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not resolve addr");
 			ret = EINVAL;
 			break;
 		}
@@ -1617,17 +1665,17 @@ static int msk_bind_client(msk_trans_t *trans) {
 		ret = rdma_resolve_route(trans->cm_id, trans->timeout);
 		if (ret) {
 			trans->state = MSK_ERROR;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_resolve_route failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_resolve_route failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
 		while (trans->state == MSK_ADDR_RESOLVED) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
+			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 
 		if (trans->state != MSK_ROUTE_RESOLVED) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not resolve route");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not resolve route");
 			ret = EINVAL;
 			break;
 		}
@@ -1650,7 +1698,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_ROUTE_RESOLVED) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans isn't half-connected?");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans isn't half-connected?");
 		return EINVAL;
 	}
 
@@ -1667,19 +1715,19 @@ int msk_finalize_connect(msk_trans_t *trans) {
 		ret = rdma_connect(trans->cm_id, &conn_param);
 		if (ret) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "rdma_connect failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_connect failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
 		while (trans->state == MSK_ROUTE_RESOLVED) {
 			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
-			INFO_LOG(internals->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
+			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 
 		if (trans->state == MSK_CONNECTED) {
 			msk_cq_addfd(trans);
 		} else {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Connection failed");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Connection failed");
 			ret = ECONNREFUSED;
 			break;
 		}
@@ -1701,17 +1749,17 @@ int msk_connect(msk_trans_t *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_INIT) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
 		return EINVAL;
 	}
 
 	if (trans->server) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Must be on client side to call this function");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Must be on client side to call this function");
 		return EINVAL;
 	}
 
 	if ((ret = msk_check_create_epoll_thread(&internals->cm_thread, msk_cm_thread, trans, &internals->cm_epollfd))) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 	msk_cm_addfd(trans);
@@ -1742,14 +1790,14 @@ int msk_connect(msk_trans_t *trans) {
  * @return 0 on success, the value of errno on error
  */
 int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
-	INFO_LOG(internals->debug & MSK_DEBUG_RECV, "posting recv");
+	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "posting recv");
 	msk_ctx_t *rctx;
 	int i, ret;
 
 	if (!trans || (trans->state != MSK_CONNECTED && trans->state != MSK_ROUTE_RESOLVED && trans->state != MSK_CONNECT_REQUEST)) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans (%p) isn't connected?", trans);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans (%p) isn't connected?", trans);
 		if (trans)
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
 		return EINVAL;
 	}
 
@@ -1764,12 +1812,12 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 				break;
 
 		if (i == trans->rq_depth) {
-			INFO_LOG(internals->debug & MSK_DEBUG_RECV, "Waiting for cond");
+			INFO_LOG(trans->debug & MSK_DEBUG_RECV, "Waiting for cond");
 			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
 		}
 
 	} while ( i == trans->rq_depth );
-	INFO_LOG(internals->debug & MSK_DEBUG_RECV, "got a free context");
+	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "got a free context");
 	rctx->used = MSK_CTX_PENDING;
 
 	pthread_mutex_unlock(&trans->ctx_lock);
@@ -1783,14 +1831,17 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 
 	for (i=0; i < num_sge; i++) {
 		if (!data || !data->mr) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "You said to recv %d elements (num_sge), but we only found %d! Not requesting.", num_sge, i);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "You said to recv %d elements (num_sge), but we only found %d! Not requesting.", num_sge, i);
 			return EINVAL;
 		} 
 		rctx->sg_list[i].addr = (uintptr_t) data->data;
-		INFO_LOG(internals->debug & MSK_DEBUG_RECV, "addr: %lx\n", rctx->sg_list->addr);
+		INFO_LOG(trans->debug & MSK_DEBUG_RECV, "addr: %lx\n", rctx->sg_list->addr);
 		rctx->sg_list[i].length = data->max_size;
 		rctx->sg_list[i].lkey = data->mr->lkey;
-		data = data->next;
+		if (i == num_sge-1)
+			data->next = NULL;
+		else
+			data = data->next;
 	}
 
 	rctx->wr.rwr.next = NULL;
@@ -1800,7 +1851,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 
 	ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_post_recv failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_post_recv failed: %s (%d)", strerror(ret), ret);
 		return ret; // FIXME np_uerror(ret)
 	}
 
@@ -1808,27 +1859,27 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 }
 
 static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
-	INFO_LOG(internals->debug & MSK_DEBUG_SEND, "posting a send with op %d", opcode);
+	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "posting a send with op %d", opcode);
 	msk_ctx_t *wctx;
 	int i, ret;
 	uint32_t totalsize = 0;
 
 	if (!trans || trans->state != MSK_CONNECTED) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans (%p) isn't connected?", trans);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans (%p) isn't connected?", trans);
 		if (trans)
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
 		return EINVAL;
 	}
 
 	// opcode-specific checks:
 	if (opcode == IBV_WR_RDMA_WRITE || opcode == IBV_WR_RDMA_READ) {
 		if (!rloc) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Cannot do rdma without a remote location!");
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Cannot do rdma without a remote location!");
 			return EINVAL;
 		}
 	} else if (opcode == IBV_WR_SEND || opcode == IBV_WR_SEND_WITH_IMM) {
 	} else {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "unsupported op code: %d", opcode);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "unsupported op code: %d", opcode);
 		return EINVAL;
 	}
 
@@ -1843,12 +1894,12 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 				break;
 
 		if (i == trans->sq_depth) {
-			INFO_LOG(internals->debug & MSK_DEBUG_SEND, "waiting for cond");
+			INFO_LOG(trans->debug & MSK_DEBUG_SEND, "waiting for cond");
 			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
 		}
 
 	} while ( i == trans->sq_depth );
-	INFO_LOG(internals->debug & MSK_DEBUG_SEND, "got a free context");
+	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "got a free context");
 	wctx->used = MSK_CTX_PENDING;
 
 	pthread_mutex_unlock(&trans->ctx_lock);
@@ -1862,7 +1913,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 
 	for (i=0; i < num_sge; i++) {
 		if (!data || !data->mr) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "You said to send %d elements (num_sge), but we only found %d! Not sending.", num_sge, i);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "You said to send %d elements (num_sge), but we only found %d! Not sending.", num_sge, i);
 			// or send up to previous one? It's probably an error though...
 			return EINVAL;
 		} 
@@ -1872,16 +1923,19 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 		}
 
 		wctx->sg_list[i].addr = (uintptr_t)data->data;
-		INFO_LOG(internals->debug & MSK_DEBUG_SEND, "addr: %lx\n", wctx->sg_list[i].addr);
+		INFO_LOG(trans->debug & MSK_DEBUG_SEND, "addr: %lx\n", wctx->sg_list[i].addr);
 		wctx->sg_list[i].length = data->size;
 		wctx->sg_list[i].lkey = data->mr->lkey;
 		totalsize += data->size;
 
-		data = data->next;
+		if (i == num_sge-1)
+			data->next = NULL;
+		else
+			data = data->next;
 	}
 
 	if (rloc && totalsize > rloc->size) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trying to send or read a buffer bigger than the remote buffer (shall we truncate?)");
 		return EMSGSIZE;
 	}
 
@@ -1899,7 +1953,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 
 	ret = ibv_post_send(trans->qp, &wctx->wr.wwr, &trans->bad_send_wr);
 	if (ret) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "ibv_post_send failed: %s (%d)", strerror(ret), ret);
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_post_send failed: %s (%d)", strerror(ret), ret);
 		return ret; // FIXME np_uerror(ret)
 	}
 
