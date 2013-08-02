@@ -74,26 +74,47 @@ struct privatedata {
 	struct datalock *first_datalock;
 	pthread_mutex_t *plock;
 	pthread_cond_t *pcond;
+	int rand_thresh;
+	int flip_thresh;
 };
 
 struct thread_arg {
 	pcap_dumper_t *pcap_dumper;
 	uint32_t block_size;
 	uint32_t recv_num;
+	int rand_thresh;
+	int flip_thresh;
 };
 
 static int run_threads = 1;
 
-void sigHandler(int s) {
+static void sigHandler(int s) {
 	run_threads = 0;
 }
 
-void callback_recv(msk_trans_t *, msk_data_t *, void*);
+static int init_rand() {
+	int fd, rc;
+	unsigned int seed;
 
-void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0) {
+		return errno;
+	}
+	rc = read(fd, &seed, 4);
+	close(fd);
+	if (rc != 4) {
+		return EAGAIN;
+	}
+	srand(seed);
+	return 0;
 }
 
-void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
+static void callback_recv(msk_trans_t *, msk_data_t *, void*);
+
+static void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
+}
+
+static void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	struct datalock *datalock = arg;
 	struct privatedata *priv = trans->private_data;
 
@@ -108,7 +129,7 @@ void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	pthread_mutex_unlock(&datalock->lock);
 }
 
-void callback_disconnect(msk_trans_t *trans) {
+static void callback_disconnect(msk_trans_t *trans) {
 	struct privatedata *priv = trans->private_data;
 
 	if (!priv)
@@ -119,7 +140,7 @@ void callback_disconnect(msk_trans_t *trans) {
 	pthread_mutex_unlock(priv->plock);
 }
 
-void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
+static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	struct datalock *datalock = arg;
 	struct pcap_pkthdr pcaphdr;
 	struct pkt_hdr *packet;
@@ -128,6 +149,20 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	if (!datalock || !priv) {
 		ERROR_LOG("no callback_arg?");
 		return;
+	}
+
+	/* error injection */
+	if (priv->flip_thresh) {
+		uint8_t *cur;
+		int r;
+		for (cur = pdata->data; cur < pdata->data + pdata->size; cur++) {
+			r = rand();
+			if (r < priv->rand_thresh) {
+				*cur = (uint8_t)r;
+			} else if (r < priv->flip_thresh) {
+				*cur ^= r % 8;
+			}
+		}
 	}
 
 	pthread_mutex_lock(&datalock->lock);
@@ -140,12 +175,12 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
 	packet->ipv6.ip_len = htons(pcaphdr.len);
-	packet->tcp.th_seq_nr = priv->seq_nr;
 
 	/* Need the lock both for writing in pcap_dumper AND for ack_nr,
 	 * otherwise some seq numbers are not ordered properly.
 	 */
 	pthread_mutex_lock(priv->plock);
+	packet->tcp.th_seq_nr = priv->seq_nr;
 	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pcaphdr.len - sizeof(struct pkt_hdr));
 	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 	ipv6_tcp_checksum(packet);
@@ -155,7 +190,7 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	pthread_mutex_unlock(&datalock->lock);
 }
 
-void print_help(char **argv) {
+static void print_help(char **argv) {
 	printf("Usage: %s -s port -c addr port [-w out.pcap] [-b blocksize]\n", argv[0]);
 	printf("Mandatory arguments:\n"
 		"	-c, --client addr port: connect point on incoming connection\n"
@@ -166,13 +201,17 @@ void print_help(char **argv) {
 		"	-w out.pcap: output file\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n"
 		"	-r, --recv-num num: number of packets we can recv at once (default: %u)\n"
+		"	-E, --rand-byte <proba>: with ratio between 0.0 and 1.0,\n"
+		"		probability for each byte to be changed randomly\n"
+		"		The data is dumped _after_ error injection\n"
+		"	-e, --flip-byte <proba>: same, but there's only one bit flip\n"
 		"	-v, --verbose: verbose, more v for more verbosity\n"
 		"	-q, --quiet: quiet output\n",
 		DEFAULT_BLOCK_SIZE, DEFAULT_RECV_NUM);
 
 }
 
-void* flush_thread(void *arg) {
+static void* flush_thread(void *arg) {
 	pcap_dumper_t **p_pcap_dumper = arg;
 	/* keep this value for close or race between check in while and dump_flush */
 	pcap_dumper_t *pcap_dumper = *p_pcap_dumper;
@@ -187,7 +226,7 @@ void* flush_thread(void *arg) {
 	pthread_exit(NULL);
 }
 
-void *setup_thread(void *arg){
+static void *setup_thread(void *arg){
 	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 	struct thread_arg *thread_arg;
@@ -269,6 +308,10 @@ void *setup_thread(void *arg){
 	s_priv = child_trans->private_data;
 	c_priv = c_trans->private_data;
 
+	s_priv->rand_thresh = thread_arg->rand_thresh;
+	c_priv->rand_thresh = thread_arg->rand_thresh;
+	s_priv->flip_thresh = thread_arg->flip_thresh;
+	c_priv->flip_thresh = thread_arg->flip_thresh;
 
 	s_priv->pcap_dumper = thread_arg->pcap_dumper;
 	c_priv->pcap_dumper = thread_arg->pcap_dumper;
@@ -335,6 +378,7 @@ int main(int argc, char **argv) {
 	char *pcap_file;
 	pcap_t *pcap;
 	pcap_dumper_t *pcap_dumper;
+	double double_proba;
 
 	// argument handling
 	struct thread_arg thread_arg;
@@ -350,6 +394,8 @@ int main(int argc, char **argv) {
 		{ "quiet",	no_argument,		0,		'q' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ "recv-num",	required_argument,	0,		'r' },
+		{ "rand-byte",	required_argument,	0,		'E' },
+		{ "flip-byte",	required_argument,	0,		'e' },
 		{ 0,		0,			0,		 0  }
 	};
 
@@ -374,7 +420,7 @@ int main(int argc, char **argv) {
 	pcap_file = "/tmp/rmitm.pcap";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvs:S:c:w:b:r:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvE:e:s:S:c:w:b:r:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -442,6 +488,26 @@ int main(int argc, char **argv) {
 				if (errno || thread_arg.recv_num == 0)
 					ERROR_LOG("Invalid recv_num, assuming default (%u)", DEFAULT_RECV_NUM);
 				break;
+			case 'E':
+				double_proba = strtod(optarg, &tmp_s);
+				if (tmp_s == optarg || double_proba < 0.0 || double_proba > 1.0) {
+					ERROR_LOG("probability \"%s\" must be between 0.0 and 1.0\n",
+						optarg);
+					exit(EINVAL);
+				}
+
+				thread_arg.rand_thresh = RAND_MAX*double_proba;
+				break;
+			case 'e':
+				double_proba = strtod(optarg, &tmp_s);
+				if (tmp_s == optarg || double_proba < 0.0 || double_proba > 1.0) {
+					ERROR_LOG("probability \"%s\" must be between 0.0 and 1.0\n",
+						optarg);
+					exit(EINVAL);
+				}
+
+				thread_arg.flip_thresh = RAND_MAX*double_proba;
+				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
 				print_help(argv);
@@ -461,11 +527,18 @@ int main(int argc, char **argv) {
 	if (thread_arg.recv_num == 0)
 		thread_arg.recv_num = DEFAULT_RECV_NUM;
 
+	if (thread_arg.flip_thresh > RAND_MAX - thread_arg.rand_thresh) {
+		ERROR_LOG("flip and random probabilities are additive, can't be more than 1!");
+		exit(EINVAL);
+	}
+	thread_arg.flip_thresh += thread_arg.rand_thresh;
+
 	s_attr.rq_depth = thread_arg.recv_num+1;
 	s_attr.sq_depth = thread_arg.recv_num+1;
 	c_attr.rq_depth = thread_arg.recv_num+1;
 	c_attr.sq_depth = thread_arg.recv_num+1;
 
+	TEST_Z(init_rand());
 
 	// server init
 	TEST_Z(msk_init(&s_trans, &s_attr));
