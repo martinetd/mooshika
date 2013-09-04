@@ -74,7 +74,7 @@ struct pkt_hdr {
 #define	CHECKSUM_CARRY(x) \
     (~((x & 0xffff) + (x >> 16)) & 0xffff)
 
-static uint16_t checksum(u_int16_t *data, int len) {
+static inline uint16_t checksum(u_int16_t *data, int len) {
 	uint32_t sum = 0;
 	union {
 		int16_t s;
@@ -99,7 +99,7 @@ static uint16_t checksum(u_int16_t *data, int len) {
 
 #define tcp_len(hdr) (ntohs(hdr->ipv6.ip_len) - sizeof(struct ipv6_hdr))
 
-static void ipv6_tcp_checksum(struct pkt_hdr *hdr) {
+static inline void ipv6_tcp_checksum(struct pkt_hdr *hdr) {
 	uint32_t sum;
 	hdr->tcp.th_sum = 0;
 
@@ -111,6 +111,9 @@ static void ipv6_tcp_checksum(struct pkt_hdr *hdr) {
 
 static inline int min(int a, int b) {
 	return (a < b) ? a: b;
+}
+static inline int max(int a, int b) {
+	return (a < b) ? b: a;
 }
 
 #endif /* _RMITM_H_ */

@@ -55,8 +55,8 @@
 
 #define DEFAULT_BLOCK_SIZE 1024*1024 // nfs page size
 #define DEFAULT_RECV_NUM 16
-#define PACKET_HARD_MAX_LEN (64*1024-1)
-#define PACKET_TRUNC_LEN 1000
+#define DEFAULT_HARD_TRUNC_LEN (64*1024-1)
+#define DEFAULT_TRUNC_LEN 4096
 
 #define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
@@ -76,6 +76,8 @@ struct privatedata {
 	pthread_cond_t *pcond;
 	int rand_thresh;
 	int flip_thresh;
+	uint32_t trunc;
+	uint32_t hard_trunc;
 };
 
 struct thread_arg {
@@ -84,6 +86,8 @@ struct thread_arg {
 	uint32_t recv_num;
 	int rand_thresh;
 	int flip_thresh;
+	uint32_t trunc;
+	uint32_t hard_trunc;
 };
 
 static int run_threads = 1;
@@ -112,6 +116,8 @@ static int init_rand() {
 static void callback_recv(msk_trans_t *, msk_data_t *, void*);
 
 static void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
+	if (trans->state != MSK_CLOSING || trans->state != MSK_ERROR)
+		INFO_LOG(trans->debug, "error callback on buffer %p\n", pdata);
 }
 
 static void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -169,8 +175,8 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	msk_post_send(priv->o_trans, pdata, callback_send, callback_error, datalock);
 
 	gettimeofday(&pcaphdr.ts, NULL);
-	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN);
-	pcaphdr.caplen = min(pcaphdr.len, PACKET_TRUNC_LEN);
+	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, priv->hard_trunc);
+	pcaphdr.caplen = min(pcaphdr.len, priv->trunc);
 
 	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
@@ -191,14 +197,16 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 static void print_help(char **argv) {
-	printf("Usage: %s -s port -c addr port [-w out.pcap] [-b blocksize]\n", argv[0]);
+	printf("Usage: %s -s port -c addr port [-w pcap.out] [-b blocksize]\n", argv[0]);
 	printf("Mandatory arguments:\n"
 		"	-c, --client addr port: connect point on incoming connection\n"
 		"	-s, --server port: listen on local addresses at given port\n"
 		"	OR\n"
 		"	-S addr port: listen on given address/port\n"
 		"Optional arguments:\n"
-		"	-w out.pcap: output file\n"
+		"	-f, --file pcap.out: output file\n"
+		"	-t, --truncate size: size to truncate packets at (with tcp header)\n"
+		"		If viewed in wireshark, max is %u (default: %u)\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n"
 		"	-r, --recv-num num: number of packets we can recv at once (default: %u)\n"
 		"	-E, --rand-byte <proba>: with ratio between 0.0 and 1.0,\n"
@@ -207,6 +215,7 @@ static void print_help(char **argv) {
 		"	-e, --flip-byte <proba>: same, but there's only one bit flip\n"
 		"	-v, --verbose: verbose, more v for more verbosity\n"
 		"	-q, --quiet: quiet output\n",
+		DEFAULT_HARD_TRUNC_LEN, DEFAULT_TRUNC_LEN,
 		DEFAULT_BLOCK_SIZE, DEFAULT_RECV_NUM);
 
 }
@@ -315,6 +324,10 @@ static void *setup_thread(void *arg){
 
 	s_priv->pcap_dumper = thread_arg->pcap_dumper;
 	c_priv->pcap_dumper = thread_arg->pcap_dumper;
+	s_priv->trunc = thread_arg->trunc;
+	c_priv->trunc = thread_arg->trunc;
+	s_priv->hard_trunc = thread_arg->hard_trunc;
+	c_priv->hard_trunc = thread_arg->hard_trunc;
 
 	c_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
 	s_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
@@ -394,6 +407,8 @@ int main(int argc, char **argv) {
 		{ "quiet",	no_argument,		0,		'q' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ "recv-num",	required_argument,	0,		'r' },
+		{ "file",	required_argument,	0,		'f' },
+		{ "truncate",	required_argument,	0,		't' },
 		{ "rand-byte",	required_argument,	0,		'E' },
 		{ "flip-byte",	required_argument,	0,		'e' },
 		{ 0,		0,			0,		 0  }
@@ -417,10 +432,10 @@ int main(int argc, char **argv) {
 	c_attr.disconnect_callback = callback_disconnect;
 	s_attr.worker_count = -1;
 	c_attr.worker_count = -1;
-	pcap_file = "/tmp/rmitm.pcap";
+	pcap_file = "pcap.out";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvE:e:s:S:c:w:b:r:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvE:e:s:S:c:w:b:f:r:t:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -454,7 +469,7 @@ int main(int argc, char **argv) {
 			case 'c':
 				c_attr.server = 0;
 				host = gethostbyname(optarg);
-				//FIXME: if (host->h_addrtype == AF_INET6) {
+				//FIXME: if (host->h_addrtype == AF_INET6)
 				memcpy(&c_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
 			case 's':
@@ -465,11 +480,25 @@ int main(int argc, char **argv) {
 			case 'S':
 				s_attr.server = 10;
 				host = gethostbyname(optarg);
-				//FIXME: if (host->h_addrtype == AF_INET6) {
+				//FIXME: if (host->h_addrtype == AF_INET6)
 				memcpy(&s_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
 			case 'w':
+				ERROR_LOG("-w has become deprecated, use -f or --file now. Proceeding anyway");
+				/* fallthrough */
+			case 'f':
 				pcap_file = optarg;
+				break;
+			case 't':
+				thread_arg.trunc = strtoul(optarg, &tmp_s, 0);
+				if (errno || thread_arg.trunc == 0) {
+					ERROR_LOG("Invalid truncate length, assuming default (%u)", DEFAULT_TRUNC_LEN);
+					break;
+				}
+				if (tmp_s[0] != 0) {
+					set_size(&thread_arg.trunc, tmp_s);
+				}
+				INFO_LOG(c_attr.debug > 1, "truncate length: %u", thread_arg.trunc);
 				break;
 			case 'b':
 				thread_arg.block_size = strtoul(optarg, &tmp_s, 0);
@@ -480,7 +509,7 @@ int main(int argc, char **argv) {
 				if (tmp_s[0] != 0) {
 					set_size(&thread_arg.block_size, tmp_s);
 				}
-				INFO_LOG(c_attr.debug, "block size: %u", thread_arg.block_size);
+				INFO_LOG(c_attr.debug > 1, "block size: %u", thread_arg.block_size);
 				break;
 			case 'r':
 				thread_arg.recv_num = strtoul(optarg, NULL, 0);
@@ -526,6 +555,9 @@ int main(int argc, char **argv) {
 		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 	if (thread_arg.recv_num == 0)
 		thread_arg.recv_num = DEFAULT_RECV_NUM;
+	if (thread_arg.trunc == 0)
+		thread_arg.trunc = DEFAULT_TRUNC_LEN;
+	thread_arg.hard_trunc = max(thread_arg.trunc, DEFAULT_HARD_TRUNC_LEN);
 
 	if (thread_arg.flip_thresh > RAND_MAX - thread_arg.rand_thresh) {
 		ERROR_LOG("flip and random probabilities are additive, can't be more than 1!");
@@ -548,7 +580,7 @@ int main(int argc, char **argv) {
 
 	TEST_Z(msk_bind_server(s_trans));
 
-	pcap = pcap_open_dead(DLT_RAW, PACKET_HARD_MAX_LEN);
+	pcap = pcap_open_dead(DLT_RAW, thread_arg.hard_trunc);
 	pcap_dumper = pcap_dump_open(pcap, pcap_file);
 	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &pcap_dumper));
 
