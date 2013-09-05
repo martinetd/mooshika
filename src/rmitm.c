@@ -116,8 +116,8 @@ static int init_rand() {
 static void callback_recv(msk_trans_t *, msk_data_t *, void*);
 
 static void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
-	if (trans->state != MSK_CLOSING || trans->state != MSK_ERROR)
-		INFO_LOG(trans->debug, "error callback on buffer %p\n", pdata);
+	INFO_LOG(trans->state != MSK_CLOSING && trans->state != MSK_CLOSED
+		&& trans->debug, "error callback on buffer %p", pdata);
 }
 
 static void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -197,7 +197,7 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 static void print_help(char **argv) {
-	printf("Usage: %s -s port -c addr port [-w pcap.out] [-b blocksize]\n", argv[0]);
+	printf("Usage: %s -s port -c addr port [-f pcap.out]\n", argv[0]);
 	printf("Mandatory arguments:\n"
 		"	-c, --client addr port: connect point on incoming connection\n"
 		"	-s, --server port: listen on local addresses at given port\n"
@@ -435,7 +435,7 @@ int main(int argc, char **argv) {
 	pcap_file = "pcap.out";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvE:e:s:S:c:w:b:f:r:t:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvqE:e:s:S:c:w:b:f:r:t:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -581,7 +581,7 @@ int main(int argc, char **argv) {
 	TEST_Z(msk_bind_server(s_trans));
 
 	pcap = pcap_open_dead(DLT_RAW, thread_arg.hard_trunc);
-	pcap_dumper = pcap_dump_open(pcap, pcap_file);
+	TEST_NZ(pcap_dumper = pcap_dump_open(pcap, pcap_file));
 	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &pcap_dumper));
 
 	thread_arg.pcap_dumper = pcap_dumper;

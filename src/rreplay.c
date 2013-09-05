@@ -76,8 +76,8 @@ struct privatedata {
 
 
 static void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
-	if (trans->state != MSK_CLOSING)
-		INFO_LOG(trans->debug, "Error callback on buffer %p", pdata);
+	INFO_LOG(trans->state != MSK_CLOSING && trans->state != MSK_CLOSED
+		&& trans->debug, "error callback on buffer %p", pdata);
 }
 
 static void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -111,8 +111,8 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 
 	/* check we got what expected */
 	if (priv->docheck && (
-//	    priv->pcaphdr->len != min(pdata->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN) ||
-	    memcmp(priv->packet->data, pdata->data, priv->pcaphdr->caplen) != 0)) {
+//	    priv->pcaphdr->len - PACKET_HDR_LEN != min(pdata->size + PACKET_HDR_LEN, PACKET_HARD_MAX_LEN) ||
+	    memcmp(priv->packet->data, pdata->data, priv->pcaphdr->caplen - PACKET_HDR_LEN) != 0)) {
 		ERROR_LOG("Received packet doesn't match what we expected! Aborting.");
 		priv->rc = EBADMSG;
 	/* only repost buffer if we didn't have an error (or didn't check) */
@@ -126,11 +126,17 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 static void print_help(char **argv) {
-	printf("Usage: %s -s port -c addr port [-w pcap.out] [-b blocksize]\n", argv[0]);
+	printf("Usage: %s (-s port|-c addr port) [-f pcap.out]\n", argv[0]);
 	printf("Mandatory argument:\n"
 		"	-c, --client addr port: connect point on incoming connection\n"
+		"	OR\n"
+		"	-s, --server port: listen on local addresses at given port\n"
+		"	OR\n"
+		"	-S addr port: listen on given address/port\n"
 		"Optional arguments:\n"
 		"	-f, --file pcap.out: input file\n"
+		"	-B, --banner: server sends a banner and is expected to talk first\n"
+		"	-n, --no-check: do not verify that received data is what we expected\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n"
 		"	-r, --recv-num num: number of packets we can recv at once (default: %u)\n"
 		"	-v, --verbose: verbose, more v for more verbosity\n"
@@ -140,14 +146,22 @@ static void print_help(char **argv) {
 }
 
 int main(int argc, char **argv) {
-	msk_trans_t *trans;
+	msk_trans_t *trans, *listen_trans;
 	msk_trans_attr_t trans_attr;
 
+	char errbuf[PCAP_ERRBUF_SIZE];
 	char *pcap_file;
 	pcap_t *pcap;
 
 	uint32_t block_size = 0, recv_num = 0;
-	//int second_talk;
+	int banner = 0;
+
+	int i, rc;
+	uint8_t *rdmabuf;
+	struct ibv_mr *mr;
+	msk_data_t *data, *wdata;
+	struct privatedata priv;
+
 
 	// argument handling
 	int option_index = 0;
@@ -156,17 +170,22 @@ int main(int argc, char **argv) {
 	struct hostent *host;
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
+		{ "server",	required_argument,	0,		's' },
+		{ "banner",	no_argument,		0,		'B' },
 		{ "help",	no_argument,		0,		'h' },
 		{ "verbose",	no_argument,		0,		'v' },
 		{ "quiet",	no_argument,		0,		'q' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ "file",	required_argument,	0,		'f' },
 		{ "recv-num",	required_argument,	0,		'r' },
+		{ "no-check",	no_argument,		0,		'n' },
 		{ 0,		0,			0,		 0  }
 	};
 
 
 	memset(&trans_attr, 0, sizeof(msk_trans_attr_t));
+	memset(&priv, 0, sizeof(struct privatedata));
+	priv.docheck = 1;
 
 	trans_attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
@@ -178,10 +197,12 @@ int main(int argc, char **argv) {
 	pcap_file = "pcap.out";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvc:r:b:r:t:f:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvqc:s:S:r:b:r:t:f:Bn", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
+					trans_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+				} else if (last_op == 'S') {
 					trans_attr.addr.sa_in.sin_port = htons(atoi(optarg));
 				} else {
 					ERROR_LOG("Failed to parse arguments");
@@ -208,11 +229,28 @@ int main(int argc, char **argv) {
 				//FIXME: if (host->h_addrtype == AF_INET6)
 				memcpy(&trans_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
 				break;
+			case 's':
+				trans_attr.server = 10;
+				inet_pton(AF_INET, "0.0.0.0", &trans_attr.addr.sa_in.sin_addr);
+				trans_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+				break;
+			case 'S':
+				trans_attr.server = 10;
+				host = gethostbyname(optarg);
+				//FIXME: if (host->h_addrtype == AF_INET6)
+				memcpy(&trans_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				break;
 			case 'q':
 				trans_attr.debug = 0;
 				break;
 			case 'f':
 				pcap_file = optarg;
+				break;
+			case 'B':
+				banner = 1;
+				break;
+			case 'n':
+				priv.docheck = 0;
 				break;
 			case 'b':
 				block_size = strtoul(optarg, &tmp_s, 0);
@@ -240,7 +278,7 @@ int main(int argc, char **argv) {
 	}
 
 	if (trans_attr.server == -1) {
-		ERROR_LOG("Must have configured what to connect to!");
+		ERROR_LOG("Must be either client or server!");
 		print_help(argv);
 		exit(EINVAL);
 	}
@@ -262,20 +300,23 @@ int main(int argc, char **argv) {
 	}
 
 	/* open pcap file */
-	char errbuf[PCAP_ERRBUF_SIZE];
 	pcap = pcap_open_offline( pcap_file, errbuf );
 
+	if (pcap == NULL) {
+		ERROR_LOG("Couldn't open pcap file: %s", errbuf);
+		return EINVAL;
+	}
 
 	/* finish msk init */
 	const size_t mr_size = (recv_num+1)*block_size;
 
-	TEST_Z(msk_connect(trans));
-
-	int i, rc;
-	uint8_t *rdmabuf;
-	struct ibv_mr *mr;
-	msk_data_t *data, *wdata;
-	struct privatedata *priv;
+	if (trans_attr.server == 0)
+		TEST_Z(msk_connect(trans));
+	else {
+		listen_trans = trans;
+		TEST_Z(msk_bind_server(listen_trans));
+		trans = msk_accept_one(listen_trans);
+	}
 
 	TEST_NZ(rdmabuf = malloc(mr_size));
 	memset(rdmabuf, 0, mr_size);
@@ -291,44 +332,52 @@ int main(int argc, char **argv) {
 	}
 	wdata = &data[recv_num];
 
-	TEST_NZ(trans->private_data = malloc(sizeof(struct privatedata)));
-	priv = trans->private_data;
-	memset(priv, 0, sizeof(struct privatedata));
+	trans->private_data = &priv;
 
-	pthread_mutex_init(&priv->lock, NULL);
-	pthread_cond_init(&priv->cond, NULL);
+	pthread_mutex_init(&priv.lock, NULL);
+	pthread_cond_init(&priv.cond, NULL);
 
 	for (i=0; i<recv_num; i++) {
 		TEST_Z(msk_post_recv(trans, &data[i], callback_recv, callback_error, NULL));
 	}
 
-	pthread_mutex_lock(&priv->lock);
+	pthread_mutex_lock(&priv.lock);
 
-	TEST_Z(msk_finalize_connect(trans));
+	if (trans->server == 0)
+		TEST_Z(msk_finalize_connect(trans));
+	else
+		TEST_Z(msk_finalize_accept(trans));
 
+	/* set on first packet */
 	uint32_t send_ip = 0;
-	uint16_t send_port;
+	uint16_t send_port = 0;
 
 	i=0;
-	while ((rc = pcap_next_ex(pcap, &priv->pcaphdr, (const u_char**)&priv->packet)) >= 0) {
+	while ((rc = pcap_next_ex(pcap, &priv.pcaphdr, (const u_char**)&priv.packet)) >= 0) {
 		INFO_LOG(trans->debug & (MSK_DEBUG_SEND|MSK_DEBUG_RECV), "Iteration %d", i++);
 
 		/* first packet: */
 		if (send_ip == 0) {
-			send_ip = priv->packet->ipv6.ip_src.s6_addr32[3];
-			send_port = priv->packet->tcp.th_sport;
+			/* who talks first? */
+			if ((trans->server == 0 && banner == 0) || (trans->server && banner == 1)) {
+				send_ip = priv.packet->ipv6.ip_src.s6_addr32[3];
+				send_port = priv.packet->tcp.th_sport;
+			} else {
+				send_ip = priv.packet->ipv6.ip_dst.s6_addr32[3];
+				send_port = priv.packet->tcp.th_dport;
+			}
 		}
 
 		/* all packets: decide if we send it or if we wait till we receive another */
-		if (priv->packet->ipv6.ip_src.s6_addr32[3] == send_ip &&
-		    priv->packet->tcp.th_sport == send_port) {
-			if (priv->pcaphdr->len != priv->pcaphdr->caplen) {
+		if (priv.packet->ipv6.ip_src.s6_addr32[3] == send_ip &&
+		    priv.packet->tcp.th_sport == send_port) {
+			if (priv.pcaphdr->len != priv.pcaphdr->caplen) {
 				ERROR_LOG("Can't send truncated data! make sure you've stored all the capture (-t in rmitm)");
 				rc = EINVAL;
 				break;
 			}
-			memcpy(wdata->data, priv->packet->data, priv->pcaphdr->len);
-			wdata->size = priv->pcaphdr->len;
+			memcpy(wdata->data, priv.packet->data, priv.pcaphdr->len);
+			wdata->size = priv.pcaphdr->len;
 			rc = msk_post_send(trans, wdata, callback_send, callback_error, NULL);
 			if (rc) {
 				ERROR_LOG("msk_post_send failed with rc %d (%s)", rc, strerror(rc));
@@ -336,24 +385,29 @@ int main(int argc, char **argv) {
 			}
 		} else {
 			INFO_LOG(trans->debug & (MSK_DEBUG_SEND|MSK_DEBUG_RECV), "Waiting");
-			pthread_cond_wait(&priv->cond, &priv->lock);
-			if (priv->rc != 0) {
+			pthread_cond_wait(&priv.cond, &priv.lock);
+			if (priv.rc != 0) {
 				/* got an error in recv thread */
 				ERROR_LOG("stopping loop");
-				rc = priv->rc;
+				rc = priv.rc;
 				break;
 			}
 		}
 	}
-	pthread_mutex_unlock(&priv->lock);
+	pthread_mutex_unlock(&priv.lock);
 	/* mooshika doesn't use negative return values, so hopefully -1 can only mean pcap error */
 	if (rc == -1) {
 		ERROR_LOG("Pcap error: %s", pcap_geterr(pcap));
 	}
 
+	pcap_close(pcap);
 	msk_destroy_trans(&trans);
 
-	printf("Replay ended succesfully!\n");
+	/* -2 is pcap way of saying end of file */
+	if (rc == -2) {
+		rc = 0;
+		printf("Replay ended succesfully!\n");
+	}
 
 	return rc;
 }

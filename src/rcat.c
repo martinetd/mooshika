@@ -80,8 +80,8 @@ void callback_disconnect(msk_trans_t *trans) {
 
 
 void callback_error(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
-	if (trans->state != MSK_CLOSING)
-		printf("Got an error! What should we do?!\n");
+	INFO_LOG(trans->state != MSK_CLOSING && trans->state != MSK_CLOSED
+		&& trans->debug, "error callback on buffer %p", pdata);
 }
 
 void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
