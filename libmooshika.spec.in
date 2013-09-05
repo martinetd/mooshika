@@ -18,7 +18,7 @@ Requires: librdmacm-devel, libibverbs-devel
 
 %package rmitm
 Group: Application/Devel
-Summary: RDMA man in the middle
+Summary: RDMA man in the middle and replay tool (rreplay)
 Requires: libpcap
 BuildRequires: libpcap-devel
 
@@ -34,7 +34,7 @@ It is an helper for rdma connection handling
 Development files for libmooshika
 
 %description rmitm
-RDMA man in the middle
+RDMA man in the middle and replay tool
 
 %description rcat
 RDMA equivalent of netcat
@@ -59,6 +59,7 @@ rm -rf %{buildroot}
 
 %files rmitm
 %{_bindir}/rmitm
+%{_bindir}/rreplay
 
 %files rcat
 %{_bindir}/rcat
