@@ -350,7 +350,9 @@ int main(int argc, char **argv) {
 
 	/* set on first packet */
 	uint32_t send_ip = 0;
+	uint32_t recv_ip = 0;
 	uint16_t send_port = 0;
+	uint16_t recv_port = 0;
 
 	i=0;
 	while ((rc = pcap_next_ex(pcap, &priv.pcaphdr, (const u_char**)&priv.packet)) >= 0) {
@@ -362,9 +364,13 @@ int main(int argc, char **argv) {
 			if ((trans->server == 0 && banner == 0) || (trans->server && banner == 1)) {
 				send_ip = priv.packet->ipv6.ip_src.s6_addr32[3];
 				send_port = priv.packet->tcp.th_sport;
+				recv_ip = priv.packet->ipv6.ip_dst.s6_addr32[3];
+				recv_port = priv.packet->tcp.th_dport;
 			} else {
 				send_ip = priv.packet->ipv6.ip_dst.s6_addr32[3];
 				send_port = priv.packet->tcp.th_dport;
+				recv_ip = priv.packet->ipv6.ip_src.s6_addr32[3];
+				recv_port = priv.packet->tcp.th_sport;
 			}
 		}
 
@@ -383,15 +389,19 @@ int main(int argc, char **argv) {
 				ERROR_LOG("msk_post_send failed with rc %d (%s)", rc, strerror(rc));
 				break;
 			}
-		} else {
+		} else if (priv.packet->ipv6.ip_src.s6_addr32[3] == recv_ip &&
+		    priv.packet->tcp.th_sport == recv_port) {
 			INFO_LOG(trans->debug & (MSK_DEBUG_SEND|MSK_DEBUG_RECV), "Waiting");
 			pthread_cond_wait(&priv.cond, &priv.lock);
 			if (priv.rc != 0) {
 				/* got an error in recv thread */
-				ERROR_LOG("stopping loop");
+				ERROR_LOG("Stopping loop");
 				rc = priv.rc;
 				break;
 			}
+		} else {
+			ERROR_LOG("Multiple streams in pcap file? Stopping loop.");
+			break;
 		}
 	}
 	pthread_mutex_unlock(&priv.lock);
