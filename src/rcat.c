@@ -142,7 +142,7 @@ void* handle_trans(void *arg) {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 
-	msk_data_t **rdata;
+	msk_data_t *rdata;
 	struct cb_arg *cb_arg;
 	int i;
 
@@ -168,18 +168,17 @@ void* handle_trans(void *arg) {
 	pthread_cond_init(&cond, NULL);
 
 	// malloc receive structs as well as a custom callback argument, and post it for future receive
-	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t*)));
+	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t)));
 	TEST_NZ(cb_arg = malloc(RECV_NUM*sizeof(struct cb_arg)));
 
 	for (i=0; i < RECV_NUM; i++) {
-		TEST_NZ(rdata[i] = malloc(sizeof(msk_data_t)));
-		rdata[i]->data=rdmabuf+i*thread_arg->block_size;
-		rdata[i]->max_size=thread_arg->block_size;
-		rdata[i]->mr = mr;
+		rdata[i].data=rdmabuf+i*thread_arg->block_size;
+		rdata[i].max_size=thread_arg->block_size;
+		rdata[i].mr = mr;
 		cb_arg[i].ackdata = ackdata;
 		cb_arg[i].lock = &lock;
 		cb_arg[i].cond = &cond;
-		TEST_Z(msk_post_recv(trans, rdata[i], callback_recv, callback_error, &(cb_arg[i])));
+		TEST_Z(msk_post_recv(trans, &rdata[i], callback_recv, callback_error, &(cb_arg[i])));
 	}
 
 	trans->private_data = cb_arg;
@@ -238,6 +237,8 @@ void* handle_trans(void *arg) {
 			trans->stats.time_callback.tv_sec, trans->stats.time_callback.tv_nsec,
 			trans->stats.time_compevent.tv_sec, trans->stats.time_compevent.tv_nsec);
 
+
+	TEST_Z(msk_dereg_mr(mr));
 
 	msk_destroy_trans(&trans);
 
@@ -391,7 +392,7 @@ int main(int argc, char **argv) {
 		if(pthread_attr_setscope(&attr_thr, PTHREAD_SCOPE_SYSTEM) != 0)
 			ERROR_LOG("can't set pthread's scope");
 
-		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_JOINABLE) != 0)
+		if(pthread_attr_setdetachstate(&attr_thr, PTHREAD_CREATE_DETACHED) != 0)
 			ERROR_LOG("can't set pthread's join state");
 
 		if (thread_arg.mt_server) {
