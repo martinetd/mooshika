@@ -65,9 +65,9 @@ struct msk_stats {
 	uint64_t tx_bytes;
 	uint64_t tx_pkt;
 	uint64_t err;
-	/* timespecs only used debug has MSK_DEBUG_SPEED */
-	struct timespec time_callback;
-	struct timespec time_compevent;
+	/* times only set if debug has MSK_DEBUG_SPEED */
+	uint64_t nsec_callback;
+	uint64_t nsec_compevent;
 };
 
 typedef void (*disconnect_callback_t) (msk_trans_t *trans);

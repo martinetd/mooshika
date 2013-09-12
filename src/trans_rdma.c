@@ -302,7 +302,7 @@ static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, 
 			ctx->err_callback(trans, ctx->data, ctx->callback_arg);
 			if (trans->debug & MSK_DEBUG_SPEED) {
 				clock_gettime(CLOCK_MONOTONIC, &ts_end);
-				sub_timespec(trans->stats.time_callback, ts_start, ts_end);
+				sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 			}
 		}
 		pthread_mutex_lock(&trans->ctx_lock);
@@ -322,7 +322,7 @@ static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, 
 				ctx->callback(trans, ctx->data, ctx->callback_arg);
 				if (trans->debug & MSK_DEBUG_SPEED) {
 					clock_gettime(CLOCK_MONOTONIC, &ts_end);
-					sub_timespec(trans->stats.time_callback, ts_start, ts_end);
+					sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 				}
 			}
 
@@ -340,7 +340,7 @@ static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, 
 				ctx->callback(trans, ctx->data, ctx->callback_arg);
 				if (trans->debug & MSK_DEBUG_SPEED) {
 					clock_gettime(CLOCK_MONOTONIC, &ts_end);
-					sub_timespec(trans->stats.time_callback, ts_start, ts_end);
+					sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 				}
 			}
 
@@ -968,7 +968,7 @@ static void *msk_cq_thread(void *arg) {
 
 			if (trans->debug & MSK_DEBUG_SPEED) {
 				clock_gettime(CLOCK_MONOTONIC, &ts_end);
-				sub_timespec(trans->stats.time_compevent, ts_start, ts_end);
+				sub_timespec(&trans->stats.nsec_compevent, &ts_start, &ts_end);
 			}
 		}
 	}

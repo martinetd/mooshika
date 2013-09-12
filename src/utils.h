@@ -32,10 +32,12 @@ static inline int set_size(uint32_t *val, char *unit) {
 	return 0;
 }
 
-#define sub_timespec(new, x, y)	if (y.tv_nsec < x.tv_nsec) { \
-	new.tv_sec = y.tv_sec - x.tv_sec - 1;                \
-	new.tv_nsec = y.tv_nsec + 1000000 - x.tv_nsec;       \
-} else {                                                     \
-	new.tv_sec = y.tv_sec - x.tv_sec;                    \
-	new.tv_nsec = y.tv_nsec - x.tv_nsec;                 \
+static inline void sub_timespec(uint64_t *new, struct timespec *x, struct timespec *y) {
+	if (y->tv_nsec < x->tv_nsec) {
+		*new = (y->tv_sec - x->tv_sec - 1) * 1000000 +
+			y->tv_nsec + 1000000 - x->tv_nsec;
+	} else {
+		*new = (y->tv_sec - x->tv_sec) * 1000000 +
+			y->tv_nsec - x->tv_nsec;
+	}
 }

@@ -229,13 +229,13 @@ void* handle_trans(void *arg) {
 			"	rx_bytes\trx_pkt\n"
 			"	%10"PRIu64"\t%"PRIu64"\n"
 			"	error: %"PRIu64"\n"
-			"	callback time:   %lu.%06lus\n"
-			"	completion time: %lu.%06lus\n",
+			"	callback time:   %lu.%06lu s\n"
+			"	completion time: %lu.%06lu s\n",
 			trans->stats.tx_bytes, trans->stats.tx_pkt,
 			trans->stats.rx_bytes, trans->stats.rx_pkt,
 			trans->stats.err,
-			trans->stats.time_callback.tv_sec, trans->stats.time_callback.tv_nsec,
-			trans->stats.time_compevent.tv_sec, trans->stats.time_compevent.tv_nsec);
+			trans->stats.nsec_callback / 1000000, trans->stats.nsec_callback % 1000000,
+			trans->stats.nsec_compevent / 1000000, trans->stats.nsec_compevent % 1000000);
 
 
 	TEST_Z(msk_dereg_mr(mr));
