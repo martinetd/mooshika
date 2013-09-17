@@ -40,6 +40,7 @@
 #include <inttypes.h>	//uint*_t
 #include <errno.h>	//ENOMEM
 #include <sys/socket.h> //sockaddr
+#include <sys/un.h>     //sockaddr_un
 #include <pthread.h>	//pthread_* (think it's included by another one)
 #include <semaphore.h>  //sem_* (is it a good idea to mix sem and pthread_cond/mutex?)
 #include <arpa/inet.h>  //inet_ntop
@@ -126,9 +127,11 @@ struct msk_internals {
 	int debug;
 	pthread_t cm_thread;		/**< Thread id for connection manager */
 	pthread_t cq_thread;		/**< Thread id for completion queue handler */
+	pthread_t stats_thread;
 	unsigned int run_threads;
 	int cm_epollfd;
 	int cq_epollfd;
+	int stats_epollfd;
 	struct worker_pool worker_pool;
 };
 
@@ -161,6 +164,10 @@ void __attribute__ ((destructor)) msk_internals_fini(void) {
 		if (internals->cq_thread) {
 			pthread_join(internals->cq_thread, NULL);
 			internals->cq_thread = 0;
+		}
+		if (internals->stats_thread) {
+			pthread_join(internals->stats_thread, NULL);
+			internals->stats_thread = 0;
 		}
 
 		pthread_mutex_destroy(&internals->lock);
@@ -607,6 +614,113 @@ static inline int msk_cm_delfd(msk_trans_t *trans) {
 	return msk_delfd(trans->event_channel->fd, internals->cm_epollfd);
 }
 
+static inline int msk_stats_add(msk_trans_t *trans) {
+	int rc;
+	struct sockaddr_un sockaddr;
+
+	/* setup trans->stats_sock here */
+	if ( (trans->stats_sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+		rc = errno;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "socket on stats socket failed, quitting thread: %d (%s)", rc, strerror(rc));
+		return rc;
+	}
+
+	memset(&sockaddr, 0, sizeof(sockaddr));
+	sockaddr.sun_family = AF_UNIX;
+	snprintf(sockaddr.sun_path, sizeof(sockaddr.sun_path)-1, "%s%p", trans->stats_prefix, trans);
+
+	unlink(sockaddr.sun_path);
+
+	if (bind(trans->stats_sock, (struct sockaddr*)&sockaddr, sizeof(sockaddr)) == -1) {
+		rc = errno;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "bind on stats socket failed, quitting thread: %d (%s)", rc, strerror(rc));
+		return rc;
+	}
+
+	if (listen(trans->stats_sock, 5) == -1) {
+		rc = errno;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "listen on stats socket failed, quitting thread: %d (%s)", rc, strerror(rc));
+		return rc;
+	}
+
+
+	return msk_addfd(trans, trans->stats_sock, internals->stats_epollfd);
+}
+
+static inline int msk_stats_del(msk_trans_t *trans) {
+	/* msk_delfd is called in stats thread when a close event comes in */
+	char sun_path[108];
+	snprintf(sun_path, sizeof(sun_path)-1, "%s%p", trans->stats_prefix, trans);
+	unlink(sun_path);
+
+	return close(trans->stats_sock);
+}
+
+/**
+ * msk_stats_thread: unix socket thread
+ *
+ * Well, a thread. arg = trans
+ */
+void *msk_stats_thread(void *arg) {
+	msk_trans_t *trans;
+	struct epoll_event epoll_events[EPOLL_MAX_EVENTS];
+	char stats_str[256];
+	int nfds, n, childfd;
+	int ret;
+
+	while (internals->run_threads > 0) {
+		nfds = epoll_wait(internals->stats_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
+		if (nfds == 0 || (nfds == -1 && errno == EINTR))
+			continue;
+
+		if (nfds == -1) {
+			ret = errno;
+			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll_pwait failed: %s (%d)", strerror(ret), ret);
+			break;
+		}
+
+		for (n = 0; n < nfds; ++n) {
+			trans = (msk_trans_t*)epoll_events[n].data.ptr;
+
+			if (!trans) {
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
+				continue;
+			}
+
+			if (epoll_events[n].events == EPOLLERR || epoll_events[n].events == EPOLLHUP) {
+				msk_delfd(trans->stats_sock, internals->stats_epollfd);
+				continue;
+			}
+			if ( (childfd = accept(trans->stats_sock, NULL, NULL)) == -1) {
+				if (errno == EINTR) {
+					continue;
+				} else {
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "accept on stats socket failed: %d (%s).", errno, strerror(errno));
+					continue;
+				}
+			}
+
+			ret = snprintf(stats_str, sizeof(stats_str), "stats:\n"
+				"	tx_bytes\ttx_pkt\n"
+				"	%10"PRIu64"\t%"PRIu64"\n"
+				"	rx_bytes\trx_pkt\n"
+				"	%10"PRIu64"\t%"PRIu64"\n"
+				"	error: %"PRIu64"\n"
+				"	callback time:   %lu.%06lu s\n"
+				"	completion time: %lu.%06lu s\n",
+				trans->stats.tx_bytes, trans->stats.tx_pkt,
+				trans->stats.rx_bytes, trans->stats.rx_pkt,
+				trans->stats.err,
+				trans->stats.nsec_callback / 1000000, trans->stats.nsec_callback % 1000000,
+				trans->stats.nsec_compevent / 1000000, trans->stats.nsec_compevent % 1000000);
+			write(childfd, stats_str, ret);
+			close(childfd);
+		}
+	}
+
+	pthread_exit(NULL);
+}
+
 /**
  * msk_cma_event_handler: handles addr/route resolved events (client side) and disconnect (everyone)
  *
@@ -645,7 +759,8 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	case RDMA_CM_EVENT_ESTABLISHED:
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ESTABLISHED");
 		pthread_mutex_lock(&trans->cm_lock);
-		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))) {
+		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))
+		|| (ret = msk_check_create_epoll_thread(&internals->stats_thread, msk_stats_thread, trans, &internals->stats_epollfd))) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 			trans->state = MSK_ERROR;
 		} else {
@@ -1119,12 +1234,18 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 			trans->cm_id = NULL;
 		}
 
+		if (trans->stats_sock)
+			msk_stats_del(trans);
+
 		// event channel is shared between all children, so don't close it unless it's its own.
 		if ((trans->server != MSK_SERVER_CHILD) && trans->event_channel) {
 			msk_cm_delfd(trans);
 			rdma_destroy_event_channel(trans->event_channel);
 			trans->event_channel = NULL;
 
+			// likewise for stats prefix
+			if (trans->stats_prefix)
+				free(trans->stats_prefix);
 		}
 
 		// these two functions do the proper if checks
@@ -1141,6 +1262,10 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 			if (internals->cq_thread) {
 				pthread_join(internals->cq_thread, NULL);
 				internals->cq_thread = 0;
+			}
+			if (internals->stats_thread) {
+				pthread_join(internals->stats_thread, NULL);
+				internals->stats_thread = 0;
 			}
 			msk_kill_worker_threads();
 		}
@@ -1217,6 +1342,16 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 		trans->disconnect_callback = attr->disconnect_callback;
 		trans->destroy_on_disconnect = attr->destroy_on_disconnect;
+		if (attr->stats_prefix) {
+			ret = strlen(attr->stats_prefix)+1;
+			trans->stats_prefix = malloc(ret);
+			if (!trans->stats_prefix) {
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->stats_prefix");
+				break;
+			}
+
+			strncpy(trans->stats_prefix, attr->stats_prefix, ret);
+		}
 
 		if (attr->pd)
 			trans->pd = attr->pd;
@@ -1404,11 +1539,12 @@ int msk_bind_server(msk_trans_t *trans) {
 	}
 
 
-	//FIXME: if (debug)?
-	char str[INET_ADDRSTRLEN];
+	if (trans->debug & MSK_DEBUG_SETUP) {
+		char str[INET_ADDRSTRLEN];
 
-	inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
-	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
+		inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
+		INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
+	}
 
 	trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
 	if (!trans->conn_requests) {
@@ -1537,6 +1673,7 @@ int msk_finalize_accept(msk_trans_t *trans) {
 
 		if (trans->state == MSK_CONNECTED) {
 			msk_cq_addfd(trans);
+			msk_stats_add(trans);
 		} else {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Accept failed");
 			ret = ECONNRESET;
@@ -1726,6 +1863,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
 
 		if (trans->state == MSK_CONNECTED) {
 			msk_cq_addfd(trans);
+			msk_stats_add(trans);
 		} else {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Connection failed");
 			ret = ECONNREFUSED;

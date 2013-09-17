@@ -118,6 +118,8 @@ struct msk_trans {
 	struct ibv_recv_wr *bad_recv_wr;
 	struct ibv_send_wr *bad_send_wr;
 	struct msk_stats stats;
+	char *stats_prefix;
+	int stats_sock;
 };
 
 struct msk_trans_attr {
@@ -134,6 +136,7 @@ struct msk_trans_attr {
 	int worker_queue_size;		/**< Size of the worker data queue - works only for the first init */
 	sockaddr_union_t addr;		/**< The remote peer's address */
 	struct ibv_pd *pd;		/**< Protection Domain pointer */
+	char *stats_prefix;
 };
 
 #define MSK_DEBUG_EVENT 0x0001

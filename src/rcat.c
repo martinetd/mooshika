@@ -127,7 +127,8 @@ void print_help(char **argv) {
 		"	-m, --multi: server only, multithread/accept multiple connections\n"
 		"	-v, --verbose: enable verbose output (more v for more verbosity)\n"
 		"	-q, --quiet: don't display connection messages\n"
-		"	-d, --stats: show connection stats on close\n"
+		"	-D, --stats <prefix>: create a socket where to look stats up at given path\n"
+		"	-d: display stats summary on close\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
 }
 
@@ -275,7 +276,7 @@ int main(int argc, char **argv) {
 		{ "multi",	no_argument,		0,		'm' },
 		{ "verbose",	no_argument,		0,		'v' },
 		{ "quiet",	no_argument,		0,		'q' },
-		{ "stats",	no_argument,		0,		'd' },
+		{ "stats",	required_argument,	0,		'D' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ 0,		0,			0,		 0  }
 	};
@@ -295,7 +296,7 @@ int main(int argc, char **argv) {
 	attr.addr.sa_in.sin_port = htons(1235);
 	attr.disconnect_callback = callback_disconnect;
 
-	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:d", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:dD:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -323,6 +324,10 @@ int main(int argc, char **argv) {
 				attr.debug = attr.debug * 2 + 1;
 				break;
 			case 'd':
+				thread_arg.stats = 1;
+				break;
+			case 'D':
+				attr.stats_prefix = optarg;
 				thread_arg.stats = 1;
 				break;
 			case 'q':
