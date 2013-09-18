@@ -100,11 +100,10 @@ struct msk_trans {
 	disconnect_callback_t disconnect_callback;
 	void *private_data;
 	long timeout;			/**< Number of mSecs to wait for connection management events */
-	int sq_depth;			/**< The depth of the Send Queue */
-	int max_send_sge;		/**< Maximum number of s/g elements per send */
-	int rq_depth;			/**< The depth of the Receive Queue. */
-	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
-	sockaddr_union_t addr;		/**< The remote peer's address */
+	struct ibv_qp_init_attr qp_attr;
+	char *node;			/**< The remote peer's hostname */
+	char *port;			/**< The service port (or name) */
+	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
 	int server;			/**< 0 if client, number of connections to accept on server, -1 (MSK_SERVER_CHILD) if server's accepted connection */
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
 	uint32_t debug;
@@ -134,7 +133,9 @@ struct msk_trans_attr {
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	int worker_count;		/**< Number of worker threads - works only for the first init */
 	int worker_queue_size;		/**< Size of the worker data queue - works only for the first init */
-	sockaddr_union_t addr;		/**< The remote peer's address */
+	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
+	char *node;			/**< The remote peer's hostname */
+	char *port;			/**< The service port (or name) */
 	struct ibv_pd *pd;		/**< Protection Domain pointer */
 	char *stats_prefix;
 };

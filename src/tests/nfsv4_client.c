@@ -92,8 +92,7 @@ int main(int argc, char **argv) {
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
 	attr.rq_depth = RECV_NUM+2;
-	attr.addr.sa_in.sin_family = AF_INET;
-	attr.addr.sa_in.sin_port = htons(1235);
+	attr.port = "1235";
 //	attr.disconnect_callback = callback_disconnect;
 
 	// argument handling
@@ -124,18 +123,18 @@ int main(int argc, char **argv) {
 				break;
 			case 'c':
 				attr.server = 0;
-				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
+				attr.node = optarg;
 				break;
 			case 's':
 				attr.server = 10;
-				inet_pton(AF_INET, "0.0.0.0", &attr.addr.sa_in.sin_addr);
+				attr.node = "0.0.0.0";
 				break;
 			case 'S':
 				attr.server = 10;
-				inet_pton(AF_INET, optarg, &attr.addr.sa_in.sin_addr);
+				attr.node = optarg;
 				break;
 			case 'p':
-				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));
+				attr.port = optarg;
 				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");

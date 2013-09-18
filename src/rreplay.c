@@ -167,7 +167,6 @@ int main(int argc, char **argv) {
 	int option_index = 0;
 	int op, last_op;
 	char *tmp_s;
-	struct hostent *host;
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
 		{ "server",	required_argument,	0,		's' },
@@ -191,7 +190,6 @@ int main(int argc, char **argv) {
 	// sane values for optional or non-configurable elements
 	trans_attr.debug = 1;
 	trans_attr.max_recv_sge = 1;
-	trans_attr.addr.sa_in.sin_family = AF_INET;
 	trans_attr.disconnect_callback = callback_disconnect;
 	trans_attr.worker_count = -1;
 	pcap_file = "pcap.out";
@@ -201,9 +199,9 @@ int main(int argc, char **argv) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
-					trans_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+					trans_attr.port = optarg;
 				} else if (last_op == 'S') {
-					trans_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+					trans_attr.port = optarg;
 				} else {
 					ERROR_LOG("Failed to parse arguments");
 					print_help(argv);
@@ -225,20 +223,16 @@ int main(int argc, char **argv) {
 				break;
 			case 'c':
 				trans_attr.server = 0;
-				host = gethostbyname(optarg);
-				//FIXME: if (host->h_addrtype == AF_INET6)
-				memcpy(&trans_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				trans_attr.node = optarg;
 				break;
 			case 's':
 				trans_attr.server = 10;
-				inet_pton(AF_INET, "0.0.0.0", &trans_attr.addr.sa_in.sin_addr);
-				trans_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+				trans_attr.node = "0.0.0.0";
+				trans_attr.port = optarg;
 				break;
 			case 'S':
 				trans_attr.server = 10;
-				host = gethostbyname(optarg);
-				//FIXME: if (host->h_addrtype == AF_INET6)
-				memcpy(&trans_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				trans_attr.node = optarg;
 				break;
 			case 'q':
 				trans_attr.debug = 0;

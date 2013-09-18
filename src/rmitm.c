@@ -398,7 +398,6 @@ int main(int argc, char **argv) {
 	int option_index = 0;
 	int op, last_op;
 	char *tmp_s;
-	struct hostent *host;
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
 		{ "server",	required_argument,	0,		's' },
@@ -425,10 +424,8 @@ int main(int argc, char **argv) {
 	s_attr.debug = 1;
 	c_attr.debug = 1;
 	s_attr.max_recv_sge = 1;
-	s_attr.addr.sa_in.sin_family = AF_INET;
 	s_attr.disconnect_callback = callback_disconnect;
 	c_attr.max_recv_sge = 1;
-	c_attr.addr.sa_in.sin_family = AF_INET;
 	c_attr.disconnect_callback = callback_disconnect;
 	s_attr.worker_count = -1;
 	c_attr.worker_count = -1;
@@ -439,9 +436,9 @@ int main(int argc, char **argv) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
-					c_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+					c_attr.port = optarg;
 				} else if (last_op == 'S') {
-					s_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+					s_attr.port = optarg;
 				} else {
 					ERROR_LOG("Failed to parse arguments");
 					print_help(argv);
@@ -468,20 +465,16 @@ int main(int argc, char **argv) {
 				break;
 			case 'c':
 				c_attr.server = 0;
-				host = gethostbyname(optarg);
-				//FIXME: if (host->h_addrtype == AF_INET6)
-				memcpy(&c_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				c_attr.node = optarg;
 				break;
 			case 's':
 				s_attr.server = 10;
-				inet_pton(AF_INET, "0.0.0.0", &s_attr.addr.sa_in.sin_addr);
-				s_attr.addr.sa_in.sin_port = htons(atoi(optarg));
+				s_attr.node = "0.0.0.0";
+				s_attr.port = optarg;
 				break;
 			case 'S':
 				s_attr.server = 10;
-				host = gethostbyname(optarg);
-				//FIXME: if (host->h_addrtype == AF_INET6)
-				memcpy(&s_attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				s_attr.node = optarg;
 				break;
 			case 'w':
 				ERROR_LOG("-w has become deprecated, use -f or --file now. Proceeding anyway");

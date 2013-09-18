@@ -265,8 +265,6 @@ int main(int argc, char **argv) {
 
 	struct thread_arg thread_arg;
 
-	struct hostent *host;
-
 	// argument handling
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
@@ -292,9 +290,8 @@ int main(int argc, char **argv) {
 	// sane values for optional or non-configurable elements
 	attr.debug = 1;
 	attr.rq_depth = RECV_NUM+2;
-	attr.addr.sa_in.sin_family = AF_INET;
-	attr.addr.sa_in.sin_port = htons(1235);
 	attr.disconnect_callback = callback_disconnect;
+	attr.port = "1235"; /* default port */
 
 	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:dD:", long_options, &option_index)) != -1) {
 		switch(op) {
@@ -335,22 +332,18 @@ int main(int argc, char **argv) {
 				break;
 			case 'c':
 				attr.server = 0;
-				TEST_NZ(host = gethostbyname(optarg));
-				//FIXME: if (host->h_addrtype == AF_INET6) {
-				memcpy(&attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				attr.node = optarg;
 				break;
 			case 's':
 				attr.server = 10;
-				inet_pton(AF_INET, "0.0.0.0", &attr.addr.sa_in.sin_addr);
+				attr.node = "0.0.0.0";
 				break;
 			case 'S':
 				attr.server = 10;
-				TEST_NZ(host = gethostbyname(optarg));
-				//FIXME: if (host->h_addrtype == AF_INET6) {
-				memcpy(&attr.addr.sa_in.sin_addr, host->h_addr_list[0], 4);
+				attr.node = optarg;
 				break;
 			case 'p':
-				((struct sockaddr_in*) &attr.addr)->sin_port = htons(atoi(optarg));
+				attr.port = optarg;
 				break;
 			case 'm':
 				thread_arg.mt_server = 1;

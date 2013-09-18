@@ -602,12 +602,12 @@ static inline int msk_cq_addfd(msk_trans_t *trans) {
 	return msk_addfd(trans, trans->comp_channel->fd, internals->cq_epollfd);
 }
 
-static inline int msk_cm_addfd(msk_trans_t *trans) {
-	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd);
-}
-
 static inline int msk_cq_delfd(msk_trans_t *trans) {
 	return msk_delfd(trans->comp_channel->fd, internals->cq_epollfd);
+}
+
+static inline int msk_cm_addfd(msk_trans_t *trans) {
+	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd);
 }
 
 static inline int msk_cm_delfd(msk_trans_t *trans) {
@@ -1121,16 +1121,16 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 	}
 
 	for (i = 0, ctx = trans->recv_buf;
-	     i < trans->rq_depth;
-	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
+	     i < trans->qp_attr.cap.max_recv_wr;
+	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING) {
 			ctx->used = MSK_CTX_PROCESSING;
 			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV, MSK_HAS_TRANS_LOCKS);
 		}
 
 	for (i = 0, ctx = (msk_ctx_t *)trans->send_buf;
-	     i < trans->sq_depth;
-	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
+	     i < trans->qp_attr.cap.max_send_wr;
+	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING) {
 			ctx->used = MSK_CTX_PROCESSING;
 			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND, MSK_HAS_TRANS_LOCKS);
@@ -1141,14 +1141,14 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 	do {
 		wait = 0;
 		for (i = 0, ctx = trans->recv_buf;
-		     i < trans->rq_depth;
-		     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
+		     i < trans->qp_attr.cap.max_recv_wr;
+		     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
 			if (ctx->used != MSK_CTX_FREE)
 				wait++;
 
 		for (i = 0, ctx = (msk_ctx_t *)trans->send_buf;
-		     i < trans->sq_depth;
-		     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
+		     i < trans->qp_attr.cap.max_send_wr;
+		     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
 			if (ctx->used != MSK_CTX_FREE)
 				wait++;
 
@@ -1256,6 +1256,11 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 		msk_destroy_qp(trans);
 		msk_destroy_buffer(trans);
 
+		if (trans->node)
+			free(trans->node);
+		if (trans->port)
+			free(trans->port);
+
 		pthread_mutex_lock(&internals->lock);
 		internals->run_threads--;
 		if (internals->run_threads == 0) {
@@ -1321,7 +1326,9 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 			break;
 		}
 
-		ret = rdma_create_id(trans->event_channel, &trans->cm_id, trans, RDMA_PS_TCP);
+		trans->conn_type = (attr->conn_type ? attr->conn_type : RDMA_PS_TCP);
+
+		ret = rdma_create_id(trans->event_channel, &trans->cm_id, trans, trans->conn_type);
 		if (ret) {
 			ret = errno;
 			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "create_id failed: %s (%d)", strerror(ret), ret);
@@ -1330,26 +1337,44 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 
 		trans->state = MSK_INIT;
 
-		if (!attr->addr.sa_stor.ss_family) { //FIXME: do a proper check?
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "address has to be defined");
+		if (!attr->node || !attr->port) {
+			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "node and port have to be defined");
 			ret = EDESTADDRREQ;
 			break;
 		}
-		trans->addr.sa_stor = attr->addr.sa_stor;
+		trans->node = strdup(attr->node);
+		if (!trans->node) {
+				ret = ENOMEM;
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->node");
+				break;
+		}
+		trans->port = strdup(attr->port);
+		if (!trans->port) {
+				ret = ENOMEM;
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->port");
+				break;
+		}
+		/*memcpy(trans->qp_attr, attr->qp_attr, sizeof(struct ibv_qp_init_attr));*/
+
+		/* fill in default values */
+		trans->qp_attr.cap.max_send_wr = attr->sq_depth ? attr->sq_depth : 50;
+		trans->qp_attr.cap.max_recv_wr = attr->rq_depth ? attr->rq_depth : 50;
+		trans->qp_attr.cap.max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
+		trans->qp_attr.cap.max_send_sge = attr->rq_depth ? attr->rq_depth : 50;
+		trans->qp_attr.cap.max_inline_data = 0; // change if IMM
+		trans->qp_attr.qp_type = (attr->conn_type == RDMA_PS_UDP ? IBV_QPT_UD : IBV_QPT_RC);
+		trans->qp_attr.sq_sig_all = 1;
 
 		trans->server = attr->server;
 		trans->debug = attr->debug;
 		trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
-		trans->sq_depth = attr->sq_depth ? attr->sq_depth : 50;
-		trans->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
-		trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
-		trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 		trans->disconnect_callback = attr->disconnect_callback;
 		trans->destroy_on_disconnect = attr->destroy_on_disconnect;
 		if (attr->stats_prefix) {
 			ret = strlen(attr->stats_prefix)+1;
 			trans->stats_prefix = malloc(ret);
 			if (!trans->stats_prefix) {
+				ret = ENOMEM;
 				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->stats_prefix");
 				break;
 			}
@@ -1421,21 +1446,9 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
  * @ret 0 on success, errno value on error
  */
 static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
-	struct ibv_qp_init_attr init_attr;
 	int ret;
 
-	memset(&init_attr, 0, sizeof(init_attr));
-	init_attr.cap.max_send_wr = trans->sq_depth;
-	init_attr.cap.max_recv_wr = trans->rq_depth;
-	init_attr.cap.max_recv_sge = trans->max_recv_sge;
-	init_attr.cap.max_send_sge = trans->max_send_sge;
-	init_attr.cap.max_inline_data = 0; // change if IMM
-	init_attr.qp_type = IBV_QPT_RC;
-	init_attr.send_cq = trans->cq;
-	init_attr.recv_cq = trans->cq;
-	init_attr.sq_sig_all = 1;
-
-	if (rdma_create_qp(cm_id, trans->pd, &init_attr)) {
+	if (rdma_create_qp(cm_id, trans->pd, &trans->qp_attr)) {
 		ret = errno;
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_create_qp: %s (%d)", strerror(ret), ret);
 		return ret;
@@ -1473,7 +1486,7 @@ static int msk_setup_qp(msk_trans_t *trans) {
 		return ret;
 	}
 
-	trans->cq = ibv_create_cq(trans->cm_id->verbs, trans->sq_depth + trans->rq_depth,
+	trans->cq = ibv_create_cq(trans->cm_id->verbs, trans->qp_attr.cap.max_send_wr + trans->qp_attr.cap.max_recv_wr,
 				  trans, trans->comp_channel, 0);
 	if (!trans->cq) {
 		ret = errno;
@@ -1481,6 +1494,8 @@ static int msk_setup_qp(msk_trans_t *trans) {
 		msk_destroy_qp(trans);
 		return ret;
 	}
+	trans->qp_attr.send_cq = trans->cq;
+	trans->qp_attr.recv_cq = trans->cq;
 
 	ret = ibv_req_notify_cq(trans->cq, 0);
 	if (ret) {
@@ -1505,19 +1520,19 @@ static int msk_setup_qp(msk_trans_t *trans) {
  * msk_setup_buffer
  */
 static int msk_setup_buffer(msk_trans_t *trans) {
-	trans->recv_buf = malloc(trans->rq_depth * (sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge)));
+	trans->recv_buf = malloc(trans->qp_attr.cap.max_recv_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
 	if (!trans->recv_buf) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
-	memset(trans->recv_buf, 0, trans->rq_depth * (sizeof(msk_ctx_t) + trans->max_recv_sge * sizeof(struct ibv_sge)));
+	memset(trans->recv_buf, 0, trans->qp_attr.cap.max_recv_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
 
-	trans->send_buf = malloc(trans->sq_depth * (sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge)));
+	trans->send_buf = malloc(trans->qp_attr.cap.max_send_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
 	if (!trans->send_buf) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->send_buf");
 		return ENOMEM;
 	}
-	memset(trans->send_buf, 0, trans->sq_depth * (sizeof(msk_ctx_t) + trans->max_send_sge * sizeof(struct ibv_sge)));
+	memset(trans->send_buf, 0, trans->qp_attr.cap.max_send_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
 
 	return 0;
 }
@@ -1530,6 +1545,7 @@ static int msk_setup_buffer(msk_trans_t *trans) {
  * @return 0 on success, errno value on failure
  */
 int msk_bind_server(msk_trans_t *trans) {
+	struct rdma_addrinfo hints, *res;
 	int ret;
 
 	if (!trans || trans->state != MSK_INIT) {
@@ -1543,13 +1559,6 @@ int msk_bind_server(msk_trans_t *trans) {
 	}
 
 
-	if (trans->debug & MSK_DEBUG_SETUP) {
-		char str[INET_ADDRSTRLEN];
-
-		inet_ntop(AF_INET, &trans->addr.sa_in.sin_addr, str, INET_ADDRSTRLEN);
-		INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "addr: %s, port: %d", str, ntohs(trans->addr.sa_in.sin_port));
-	}
-
 	trans->conn_requests = malloc(trans->server * sizeof(struct rdma_cm_id*));
 	if (!trans->conn_requests) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not allocate conn_requests buffer");
@@ -1558,14 +1567,23 @@ int msk_bind_server(msk_trans_t *trans) {
 
 	memset(trans->conn_requests, 0, trans->server * sizeof(struct rdma_cm_id*));
 
+	memset(&hints, 0, sizeof(struct rdma_addrinfo));
+	hints.ai_flags = RAI_PASSIVE;
+	hints.ai_port_space = trans->conn_type;
 
-
-	ret = rdma_bind_addr(trans->cm_id, &trans->addr.sa);
+	ret = rdma_getaddrinfo(trans->node, trans->port, &hints, &res);
 	if (ret) {
 		ret = errno;
-
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
+	ret = rdma_bind_addr(trans->cm_id, res->ai_src_addr);
+	if (ret) {
+		ret = errno;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_bind_addr: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+	rdma_freeaddrinfo(res);
 
 	ret = rdma_listen(trans->cm_id, trans->server);
 	if (ret) {
@@ -1780,17 +1798,29 @@ msk_trans_t *msk_accept_one_wait(msk_trans_t *trans, int msleep) {
  *
  */
 static int msk_bind_client(msk_trans_t *trans) {
+	struct rdma_addrinfo hints, *res;
 	int ret;
 
 	pthread_mutex_lock(&trans->cm_lock);
 
 	do {
-		ret = rdma_resolve_addr(trans->cm_id, NULL, (struct sockaddr*) &trans->addr, trans->timeout);
+		memset(&hints, 0, sizeof(struct rdma_addrinfo));
+		hints.ai_port_space = trans->conn_type;
+
+		ret = rdma_getaddrinfo(trans->node, trans->port, &hints, &res);
+		if (ret) {
+			ret = errno;
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo: %s (%d)", strerror(ret), ret);
+			break;
+		}
+
+		ret = rdma_resolve_addr(trans->cm_id, res->ai_src_addr, res->ai_dst_addr, trans->timeout);
 		if (ret) {
 			ret = errno;
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_resolve_addr failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
+		rdma_freeaddrinfo(res);
 
 
 		while (trans->state == MSK_INIT) {
@@ -1948,17 +1978,17 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 
 	do {
 		for (i = 0, rctx = trans->recv_buf;
-		     i < trans->rq_depth;
-		     i++, rctx = (msk_ctx_t*)((uint8_t*)rctx + sizeof(msk_ctx_t) + trans->max_recv_sge*sizeof(struct ibv_sge)))
+		     i < trans->qp_attr.cap.max_recv_wr;
+		     i++, rctx = (msk_ctx_t*)((uint8_t*)rctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
 			if (!rctx->used != MSK_CTX_FREE)
 				break;
 
-		if (i == trans->rq_depth) {
+		if (i == trans->qp_attr.cap.max_recv_wr) {
 			INFO_LOG(trans->debug & MSK_DEBUG_RECV, "Waiting for cond");
 			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
 		}
 
-	} while ( i == trans->rq_depth );
+	} while ( i == trans->qp_attr.cap.max_recv_wr );
 	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "got a free context");
 	rctx->used = MSK_CTX_PENDING;
 
@@ -2030,17 +2060,17 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 
 	do {
 		for (i = 0, wctx = (msk_ctx_t *)trans->send_buf;
-		     i < trans->sq_depth;
-		     i++, wctx = (msk_ctx_t*)((uint8_t*)wctx + sizeof(msk_ctx_t) + trans->max_send_sge*sizeof(struct ibv_sge)))
+		     i < trans->qp_attr.cap.max_send_wr;
+		     i++, wctx = (msk_ctx_t*)((uint8_t*)wctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
 			if (!wctx->used != MSK_CTX_FREE)
 				break;
 
-		if (i == trans->sq_depth) {
+		if (i == trans->qp_attr.cap.max_send_wr) {
 			INFO_LOG(trans->debug & MSK_DEBUG_SEND, "waiting for cond");
 			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
 		}
 
-	} while ( i == trans->sq_depth );
+	} while ( i == trans->qp_attr.cap.max_send_wr );
 	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "got a free context");
 	wctx->used = MSK_CTX_PENDING;
 
