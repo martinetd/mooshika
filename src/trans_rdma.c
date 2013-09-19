@@ -717,8 +717,8 @@ void *msk_stats_thread(void *arg) {
 				trans->stats.err,
 				trans->stats.nsec_callback / 1000000, trans->stats.nsec_callback % 1000000,
 				trans->stats.nsec_compevent / 1000000, trans->stats.nsec_compevent % 1000000);
-			write(childfd, stats_str, ret);
-			close(childfd);
+			ret = write(childfd, stats_str, ret);
+			ret = close(childfd);
 		}
 	}
 
