@@ -618,6 +618,10 @@ static inline int msk_stats_add(msk_trans_t *trans) {
 	int rc;
 	struct sockaddr_un sockaddr;
 
+	/* no stats if no prefix */
+	if (!trans->stats_prefix)
+		return 0;
+
 	/* setup trans->stats_sock here */
 	if ( (trans->stats_sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
 		rc = errno;
