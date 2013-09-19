@@ -1250,16 +1250,16 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
 			// likewise for stats prefix
 			if (trans->stats_prefix)
 				free(trans->stats_prefix);
+
+			if (trans->node)
+				free(trans->node);
+			if (trans->port)
+				free(trans->port);
 		}
 
 		// these two functions do the proper if checks
 		msk_destroy_qp(trans);
 		msk_destroy_buffer(trans);
-
-		if (trans->node)
-			free(trans->node);
-		if (trans->port)
-			free(trans->port);
 
 		pthread_mutex_lock(&internals->lock);
 		internals->run_threads--;
