@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
 				break;
 			case 's':
 				attr.server = 10;
-				attr.node = "0.0.0.0";
+				attr.node = "::";
 				break;
 			case 'S':
 				attr.server = 10;

@@ -469,7 +469,7 @@ int main(int argc, char **argv) {
 				break;
 			case 's':
 				s_attr.server = 10;
-				s_attr.node = "0.0.0.0";
+				s_attr.node = "::";
 				s_attr.port = optarg;
 				break;
 			case 'S':

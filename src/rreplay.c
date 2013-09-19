@@ -227,7 +227,7 @@ int main(int argc, char **argv) {
 				break;
 			case 's':
 				trans_attr.server = 10;
-				trans_attr.node = "0.0.0.0";
+				trans_attr.node = "::";
 				trans_attr.port = optarg;
 				break;
 			case 'S':
