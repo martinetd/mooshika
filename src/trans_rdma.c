@@ -1360,7 +1360,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 		trans->qp_attr.cap.max_send_wr = attr->sq_depth ? attr->sq_depth : 50;
 		trans->qp_attr.cap.max_recv_wr = attr->rq_depth ? attr->rq_depth : 50;
 		trans->qp_attr.cap.max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
-		trans->qp_attr.cap.max_send_sge = attr->rq_depth ? attr->rq_depth : 50;
+		trans->qp_attr.cap.max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
 		trans->qp_attr.cap.max_inline_data = 0; // change if IMM
 		trans->qp_attr.qp_type = (attr->conn_type == RDMA_PS_UDP ? IBV_QPT_UD : IBV_QPT_RC);
 		trans->qp_attr.sq_sig_all = 1;
