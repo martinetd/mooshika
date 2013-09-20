@@ -8,4 +8,4 @@ Description: libmooshika - rdma helper library
 Requires:
 Version: @VERSION@
 Libs: -L${libdir} -lmooshika -lpthread -ldl -lrdmacm -libverbs
-Cflags: -I{includedir}
+Cflags: -I${includedir}
