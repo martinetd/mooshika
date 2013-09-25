@@ -2010,9 +2010,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 		INFO_LOG(trans->debug & MSK_DEBUG_RECV, "addr: %lx\n", rctx->sg_list->addr);
 		rctx->sg_list[i].length = data->max_size;
 		rctx->sg_list[i].lkey = data->mr->lkey;
-		if (i == num_sge-1)
-			data->next = NULL;
-		else
+		if (i != num_sge-1)
 			data = data->next;
 	}
 
@@ -2100,9 +2098,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 		wctx->sg_list[i].lkey = data->mr->lkey;
 		totalsize += data->size;
 
-		if (i == num_sge-1)
-			data->next = NULL;
-		else
+		if (i != num_sge-1)
 			data = data->next;
 	}
 
