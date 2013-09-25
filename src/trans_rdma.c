@@ -195,6 +195,8 @@ static void *msk_cq_thread(void *arg);
  */
 
 struct ibv_mr *msk_reg_mr(msk_trans_t *trans, void *memaddr, size_t size, int access) {
+	if (!trans->pd)
+		return NULL;
 	return ibv_reg_mr(trans->pd, memaddr, size, access);
 }
 
@@ -970,15 +972,18 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 			case IBV_WC_RDMA_READ:
 				INFO_LOG(trans->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc[i].opcode);
 				trans->stats.tx_pkt++;
+				trans->stats.tx_bytes += wc[i].byte_len;
 
 				ctx = (msk_ctx_t *)wc[i].wr_id;
 
-				data = ctx->data;
-				while (data) {
-					trans->stats.tx_bytes += data->size;
-					data = data->next;
-				}
+/*				@todo: check if this is different from wc[i].byte_len?
 
+				for (i = 0, data = ctx->data;
+				     i < ctx->wr.wwr.num_sge, data != NULL;
+				     i++, data = data->next) {
+					trans->stats.tx_bytes += data->size;
+				}
+*/
 				if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
 					//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
