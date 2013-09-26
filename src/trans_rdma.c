@@ -375,11 +375,11 @@ static void* msk_worker_thread(void *arg) {
 
 		if (pool->w_count > 0) {
 			i = atomic_dec(pool->w_count);
-			if (i <= 0) {
+			if (i < 0) {
 				atomic_inc(pool->w_count);
 				continue;
 			}
-			i = atomic_inc(pool->w_head);
+			i = atomic_postinc(pool->w_head);
 			if (i >= pool->size) {
 				i = i & (pool->size-1);
 				atomic_mask(pool->w_head, pool->size-1);
@@ -511,7 +511,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 	if (flag & MSK_HAS_TRANS_CM_LOCK)
 		ctx->used = MSK_CTX_PROCESSING;
 
-	while (atomic_inc(internals->worker_pool.m_count) >= internals->worker_pool.size
+	while (atomic_inc(internals->worker_pool.m_count) > internals->worker_pool.size
 	    && internals->run_threads > 0) {
 		uint64_t n;
 		if (flag & MSK_HAS_TRANS_CM_LOCK)
@@ -536,7 +536,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
 			break;
 		}
 
-		i = atomic_inc(internals->worker_pool.m_tail);
+		i = atomic_postinc(internals->worker_pool.m_tail);
 		if (i >= internals->worker_pool.size) {
 			i = i & (internals->worker_pool.size-1);
 			atomic_mask(internals->worker_pool.w_head, internals->worker_pool.size-1);

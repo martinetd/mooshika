@@ -4,11 +4,16 @@
 //#define INFO_LOG(fmt, args...)
 
 
-#define atomic_inc(x) __sync_fetch_and_add(&x, 1)
-#define atomic_dec(x) __sync_fetch_and_sub(&x, 1)
-#define atomic_add(x,i) __sync_fetch_and_add(&x, i)
-#define atomic_sub(x,i) __sync_fetch_and_sub(&x, i)
-#define atomic_mask(x,i) __sync_fetch_and_and(&x, i)
+#define atomic_postinc(x) __sync_fetch_and_add(&x, 1)
+#define atomic_postdec(x) __sync_fetch_and_sub(&x, 1)
+#define atomic_postadd(x,i) __sync_fetch_and_add(&x, i)
+#define atomic_postsub(x,i) __sync_fetch_and_sub(&x, i)
+#define atomic_postmask(x,i) __sync_fetch_and_and(&x, i)
+#define atomic_inc(x) __sync_add_and_fetch(&x, 1)
+#define atomic_dec(x) __sync_sub_and_fetch(&x, 1)
+#define atomic_add(x,i) __sync_add_and_fetch(&x, i)
+#define atomic_sub(x,i) __sync_sub_and_fetch(&x, i)
+#define atomic_mask(x,i) __sync_and_and_fetch(&x, i)
 
 static inline int set_size(uint32_t *val, char *unit) {
 	switch(unit[0]) {
