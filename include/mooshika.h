@@ -243,7 +243,7 @@ struct sockaddr *msk_get_src_addr(msk_trans_t *trans);
 uint16_t msk_get_src_port(msk_trans_t *trans);
 uint16_t msk_get_dst_port(msk_trans_t *trans);
 
-
+struct msk_pd *msk_getpd(msk_trans_t *trans);
 
 
 #endif /* _MOOSHIKA_H */

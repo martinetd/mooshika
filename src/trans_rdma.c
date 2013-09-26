@@ -190,7 +190,7 @@ static void *msk_cq_thread(void *arg);
  *
  * @return NULL if nothing is available, next free pd if none fit, correct one if any match
  */
-static inline struct msk_pd *msk_getpd(msk_trans_t *trans) {
+struct msk_pd *msk_getpd(msk_trans_t *trans) {
 	int i = 0;
 
 	if (!trans->pd)
