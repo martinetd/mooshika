@@ -70,6 +70,15 @@ struct msk_stats {
 	uint64_t nsec_compevent;
 };
 
+struct msk_pd {
+	struct ibv_context *context;
+	struct ibv_pd *pd;
+	void *private;
+	uint32_t refcnt;
+	uint32_t used;
+};
+#define PD_GUARD ((void*)-1)
+
 typedef void (*disconnect_callback_t) (msk_trans_t *trans);
 
 #define MSK_CLIENT 0
@@ -94,7 +103,7 @@ struct msk_trans {
 	struct rdma_cm_id *cm_id;	/**< The RDMA CM ID */
 	struct rdma_event_channel *event_channel;
 	struct ibv_comp_channel *comp_channel;
-	struct ibv_pd *pd;		/**< Protection Domain pointer */
+	struct msk_pd *pd;		/**< Protection Domain pointer */
 	struct ibv_qp *qp;		/**< Queue Pair pointer */
 	struct ibv_cq *cq;		/**< Completion Queue pointer */
 	disconnect_callback_t disconnect_callback;
@@ -136,7 +145,7 @@ struct msk_trans_attr {
 	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
 	char *node;			/**< The remote peer's hostname */
 	char *port;			/**< The service port (or name) */
-	struct ibv_pd *pd;		/**< Protection Domain pointer */
+	struct msk_pd *pd;		/**< Protection Domain pointer */
 	char *stats_prefix;
 };
 

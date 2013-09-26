@@ -184,6 +184,83 @@ static void *msk_cq_thread(void *arg);
 /* UTILITY FUNCTIONS */
 
 /**
+ * msk_getpd: helper function to get the right pd for a given trans
+ *
+ * @param trans [IN] the connection handle
+ *
+ * @return NULL if nothing is available, next free pd if none fit, correct one if any match
+ */
+static inline struct msk_pd *msk_getpd(msk_trans_t *trans) {
+	int i = 0;
+
+	if (!trans->pd)
+		return NULL;
+
+	while (trans->pd[i].context != PD_GUARD) {
+		if (trans->pd[i].context == trans->cm_id->verbs) {
+			/* Got a match, woo. */
+			return &trans->pd[i];
+		}
+
+		if (!trans->pd[i].context) {
+			/* Not found, but we have room. */
+			if (atomic_postinc(trans->pd[i].used) != 0
+			    || trans->pd[i].context != NULL) {
+				/* We got raced, keep going */
+				atomic_dec(trans->pd[i].used);
+			} else {
+				trans->pd[i].context = trans->cm_id->verbs;
+				return &trans->pd[i];
+			}
+		}
+		i++;
+	}
+
+	/* No space left, too bad. */
+	return NULL;
+}
+
+
+/* Prepare for first child to allocate pd
+ * Cases:
+ *  - pd already provided in attr,
+ *  - context already set (bound to one uverb)
+ *  - need to prepare for all of them
+ */
+static int msk_setup_pd(msk_trans_t *trans) {
+	int ret;
+	struct ibv_device **devlist;
+
+	if (!trans->pd) {
+		if (trans->cm_id->verbs) {
+			ret = 1;
+		} else {
+			devlist = ibv_get_device_list(&ret);
+			if (!devlist) {
+				ret = errno;
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_get_device_list: %s (%d)", strerror(ret), ret);
+				return ret;
+			}
+			/* We only care about the number of devices */
+			ibv_free_device_list(devlist);
+		}
+
+		++ret; /* for guard */
+		trans->pd = malloc(ret * sizeof(*trans->pd));
+		if (!trans->pd) {
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc msk pd (%u elems)", ret);
+			ret = ENOMEM;
+			return ret;
+		}
+		memset(trans->pd, 0, ret * sizeof(*trans->pd));
+		trans->pd[0].refcnt = 1; /* only use refcnt of the first one */
+		trans->pd[ret-1].context = PD_GUARD;
+	}
+
+	return 0;
+}
+
+/**
  * msk_reg_mr: registers memory for rdma use (almost the same as ibv_reg_mr)
  *
  * @param trans   [IN]
@@ -195,9 +272,14 @@ static void *msk_cq_thread(void *arg);
  */
 
 struct ibv_mr *msk_reg_mr(msk_trans_t *trans, void *memaddr, size_t size, int access) {
-	if (!trans->pd)
+	struct msk_pd *pd = msk_getpd(trans);
+	if (!pd)
 		return NULL;
-	return ibv_reg_mr(trans->pd, memaddr, size, access);
+	if (!pd->pd) {
+		pd->used = 0;
+		return NULL;
+	}
+	return ibv_reg_mr(pd->pd, memaddr, size, access);
 }
 
 /**
@@ -1204,9 +1286,18 @@ static void msk_destroy_qp(msk_trans_t *trans) {
 		ibv_destroy_comp_channel(trans->comp_channel);
 		trans->comp_channel = NULL;
 	}
-	if (trans->pd) {
-		ibv_dealloc_pd(trans->pd);
-		trans->pd = NULL;
+	/* only dealloc PDs if client or accepting server */
+	if (trans->server >= 0 && trans->pd) {
+		if (atomic_dec(trans->pd->refcnt) == 0) {
+			int i = 0;
+			while (trans->pd[i].context != PD_GUARD && trans->pd[i].pd != NULL) {
+				ibv_dealloc_pd(trans->pd[i].pd);
+				trans->pd[i].pd = NULL;
+				i++;
+			}
+			free(trans->pd);
+			trans->pd = NULL;
+		}
 	}
 }
 
@@ -1387,8 +1478,12 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 			strncpy(trans->stats_prefix, attr->stats_prefix, ret);
 		}
 
-		if (attr->pd)
-			trans->pd = attr->pd;
+		if (attr->pd) {
+			if (atomic_postinc(attr->pd->refcnt) > 0)
+				trans->pd = attr->pd;
+			else
+				atomic_dec(attr->pd->refcnt);
+		}
 
 		ret = pthread_mutex_init(&trans->cm_lock, NULL);
 		if (ret) {
@@ -1453,7 +1548,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
 static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
 	int ret;
 
-	if (rdma_create_qp(cm_id, trans->pd, &trans->qp_attr)) {
+	if (rdma_create_qp(cm_id, msk_getpd(trans)->pd, &trans->qp_attr)) {
 		ret = errno;
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_create_qp: %s (%d)", strerror(ret), ret);
 		return ret;
@@ -1474,14 +1569,6 @@ static int msk_setup_qp(msk_trans_t *trans) {
 	int ret;
 
 	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "trans: %p", trans);
-
-	if (!trans->pd)
-		trans->pd = ibv_alloc_pd(trans->cm_id->verbs);
-	if (!trans->pd) {
-		ret = errno;
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_alloc_pd failed: %s (%d)", strerror(ret), ret);
-		return ret;
-	}
 
 	trans->comp_channel = ibv_create_comp_channel(trans->cm_id->verbs);
 	if (!trans->comp_channel) {
@@ -1590,6 +1677,12 @@ int msk_bind_server(msk_trans_t *trans) {
 	}
 	rdma_freeaddrinfo(res);
 
+	ret = msk_setup_pd(trans);
+	if (ret) {
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "setup pd failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
 	ret = rdma_listen(trans->cm_id, trans->server);
 	if (ret) {
 		ret = errno;
@@ -1611,6 +1704,7 @@ int msk_bind_server(msk_trans_t *trans) {
 
 static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id *cm_id) {
 	msk_trans_t *trans = malloc(sizeof(msk_trans_t));
+	struct msk_pd *pd;
 	int ret;
 
 	if (!trans) {
@@ -1624,6 +1718,21 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 	trans->cm_id->context = trans;
 	trans->state = MSK_CONNECT_REQUEST;
 	trans->server = MSK_SERVER_CHILD;
+
+	pd = msk_getpd(trans);
+	if (!pd) {
+		ret = ENOSPC;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "No space left in msk pd, multiple contexts per device?");
+		return NULL;
+	}
+	if (!pd->pd) {
+		pd->pd = ibv_alloc_pd(trans->cm_id->verbs);
+		if (!pd->pd) {
+			ret = errno;
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_alloc_pd failed: %s (%d)", strerror(ret), ret);
+			return NULL;
+		}
+	}
 
 	memset(&trans->cm_lock, 0, sizeof(pthread_mutex_t));
 	memset(&trans->cm_cond, 0, sizeof(pthread_cond_t));
@@ -1924,6 +2033,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
  */
 int msk_connect(msk_trans_t *trans) {
 	int ret;
+	struct msk_pd *pd;
 
 	if (!trans || trans->state != MSK_INIT) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
@@ -1943,6 +2053,29 @@ int msk_connect(msk_trans_t *trans) {
 
 	if ((ret = msk_bind_client(trans)))
 		return ret;
+
+	/* pick the right pd if we already have one, allocate otherwise */
+	ret = msk_setup_pd(trans);
+	if (ret) {
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "setup pd failed: %s (%d)", strerror(ret), ret);
+		return ret;
+	}
+
+	pd = msk_getpd(trans);
+	if (!pd) {
+		ret = ENOSPC;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "No space left in msk pd, multiple contexts per device?");
+		return ret;
+	}
+	if (!pd->pd) {
+		pd->pd = ibv_alloc_pd(trans->cm_id->verbs);
+		if (!pd->pd) {
+			ret = errno;
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_alloc_pd failed: %s (%d)", strerror(ret), ret);
+			return ret;
+		}
+	}
+
 	if ((ret = msk_setup_qp(trans)))
 		return ret;
 	if ((ret = msk_setup_buffer(trans)))
