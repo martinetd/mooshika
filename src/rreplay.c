@@ -56,10 +56,6 @@
 #define DEFAULT_BLOCK_SIZE 1024*1024 // nfs page size
 #define DEFAULT_RECV_NUM 16
 
-#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
-#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
-
-
 struct datalock {
 	msk_data_t *data;
 	pthread_mutex_t lock;

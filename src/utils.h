@@ -3,6 +3,8 @@
 #define INFO_LOG(debug, fmt, args...) 	if (debug) fprintf(stderr, "INFO:  %s (%d), %s: " fmt "\n", __FILE__, __LINE__, __func__, ##args)
 //#define INFO_LOG(fmt, args...)
 
+#define TEST_Z(x)  do { int retval; if ( (retval=x)) { ERROR_LOG("error: " #x " failed (returned %d: %s).", retval, strerror(retval) ); exit(retval); } } while (0)
+#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
 #define atomic_postinc(x) __sync_fetch_and_add(&x, 1)
 #define atomic_postdec(x) __sync_fetch_and_sub(&x, 1)

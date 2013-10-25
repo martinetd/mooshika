@@ -49,9 +49,6 @@
 #define RECV_NUM 2
 #define msk_post_RW msk_post_read
 
-#define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
-#define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
-
 struct datalock {
 	msk_rloc_t *rloc;
 	volatile int *count;

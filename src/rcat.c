@@ -50,9 +50,6 @@
 #define DEFAULT_BLOCK_SIZE 1024*1024
 #define RECV_NUM 1
 
-#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
-#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
-
 struct cb_arg {
 	msk_data_t *ackdata;
 	pthread_mutex_t *lock;

@@ -48,9 +48,6 @@
 #define RECV_NUM 1
 #define NUM_SGE 2
 
-#define TEST_Z(x)  do { if ( (x)) ERROR_LOG("error: " #x " failed (returned non-zero)." ); } while (0)
-#define TEST_NZ(x) do { if (!(x)) ERROR_LOG("error: " #x " failed (returned zero/null)."); } while (0)
-
 struct datalock {
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;

@@ -58,9 +58,6 @@
 #define DEFAULT_HARD_TRUNC_LEN (64*1024-1)
 #define DEFAULT_TRUNC_LEN 4096
 
-#define TEST_Z(x)  do { if ( (x)) { ERROR_LOG("error: " #x " failed (returned non-zero)." ); exit(-1); }} while (0)
-#define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
-
 
 struct datalock {
 	msk_data_t *data;
