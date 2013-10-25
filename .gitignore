@@ -8,6 +8,7 @@ doxygen
 m4
 \#*\#
 .*.swp
+*.html
 libmooshika-*.tar.gz
 libmooshika.spec
 cscope*

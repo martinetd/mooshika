@@ -1,0 +1,63 @@
+Mooshika design document
+========================
+Dominique Martinet <dominique.martinet@cea.fr>
+
+== `trans_rdma.c`
+
+
+Threads:
+
+ - `msk_cm_thread`
+ - `msk_cq_thread`
+ - (optional) `worker_count` * `msk_worker_thread`
+ - (optional) `msk_stats_thread`
+
+
+=== `msk_cm_thread`: Connection Manager thread
+
+epoll_wait on event channel fds (one per listenner or client),
+processes connection requests/process, disconnect event, errors...
+
+
+=== `msk_cq_thread`: Completion Queue thread
+
+epoll_wait on completion channel fds (one per connection),
+processes incoming messages and completion events for outgoing ones.
+
+Either executes callback directly or notify a worker thread to do it
+(lockless work queue with notification through eventfds)
+
+The actual work is done in `msk_worker_callback` in either case.
+
+
+=== Important data structures
+==== `struct msk_trans`
+Need to make half of it private somehow (so as not to need to share it
+between different transports), but contains everything needed for the
+connection to work, a state machine, stats, etc...
+
+==== `struct trans_attr`
+Parameters for the connection. Mandatory fields are:
+
+ - `server`, 0 for client, connection backlog on a server
+ - `node` and `port`: strings to use for remote peer's hostname and service
+   that will be fed to a custom getaddrinfo
+
+Useful ones:
+
+ - `debug`, a debug mask
+ - `worker_count` and `worker_queue_size` for worker threads (queue size
+    will be rounded up to bigger power of 2)
+ - `stats_prefix` for stats unix socket path
+
+==== `struct msk_ctx`: trace back to the request in the completion event
+
+ib (and portals4) allow for a uint64 to be carried through.
+Our's contains a pointer to an `msk_ctx` struct, that is:
+
+ - the processed data
+ - callbacks pointers (functions and arguments)
+ - work request
+ - scatter-gather list
+
+
