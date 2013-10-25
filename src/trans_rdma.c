@@ -81,16 +81,14 @@ struct msk_ctx {
 		MSK_CTX_PENDING,
 		MSK_CTX_PROCESSING
 	} used;				/**< 0 if we can use it for a new recv/send */
-	uint32_t pos;			/**< current position inside our own buffer. 0 <= pos <= len */
-	struct rdmactx *next;		/**< next context */
 	msk_data_t *data;
 	ctx_callback_t callback;
 	ctx_callback_t err_callback;
+	void *callback_arg;
 	union {
 		struct ibv_recv_wr rwr;
 		struct ibv_send_wr wwr;
 	} wr;
-	void *callback_arg;
 	struct ibv_sge sg_list[0]; 		/**< this is actually an array. note that when you malloc you have to add its size */
 };
 
@@ -103,7 +101,7 @@ enum msk_lock_flag {
 #define MSK_HAS_TRANS_LOCKS (MSK_HAS_TRANS_CM_LOCK | MSK_HAS_TRANS_CTX_LOCK)
 
 struct msk_worker_data {
-	msk_trans_t *trans;
+	struct msk_trans *trans;
 	struct msk_ctx *ctx;
 	enum ibv_wc_status status;
 	enum ibv_wc_opcode opcode;
@@ -190,7 +188,7 @@ static void *msk_cq_thread(void *arg);
  *
  * @return NULL if nothing is available, next free pd if none fit, correct one if any match
  */
-struct msk_pd *msk_getpd(msk_trans_t *trans) {
+struct msk_pd *msk_getpd(struct msk_trans *trans) {
 	int i = 0;
 
 	if (!trans->pd)
@@ -227,7 +225,7 @@ struct msk_pd *msk_getpd(msk_trans_t *trans) {
  *  - context already set (bound to one uverb)
  *  - need to prepare for all of them
  */
-static int msk_setup_pd(msk_trans_t *trans) {
+static int msk_setup_pd(struct msk_trans *trans) {
 	int ret;
 	struct ibv_device **devlist;
 
@@ -271,7 +269,7 @@ static int msk_setup_pd(msk_trans_t *trans) {
  * @return a pointer to the mr if registered correctly or NULL on failure
  */
 
-struct ibv_mr *msk_reg_mr(msk_trans_t *trans, void *memaddr, size_t size, int access) {
+struct ibv_mr *msk_reg_mr(struct msk_trans *trans, void *memaddr, size_t size, int access) {
 	struct msk_pd *pd = msk_getpd(trans);
 	if (!pd)
 		return NULL;
@@ -317,7 +315,7 @@ msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
 	return rloc;
 }
 
-void msk_print_devinfo(msk_trans_t *trans) {
+void msk_print_devinfo(struct msk_trans *trans) {
 	struct ibv_device_attr device_attr;
 	ibv_query_device(trans->cm_id->verbs, &device_attr);
 	uint64_t node_guid = ntohll(device_attr.node_guid);
@@ -384,7 +382,7 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 	return 0;
 }
 
-static inline void msk_worker_callback(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
+static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
 	struct timespec ts_start, ts_end;
 	if (status) {
 		if (ctx && ctx->err_callback) {
@@ -572,7 +570,7 @@ static int msk_kill_worker_threads() {
 }
 
 
-static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
+static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
 	struct msk_worker_data *wd;
 	int i;
 
@@ -643,7 +641,7 @@ static int msk_signal_worker(msk_trans_t *trans, struct msk_ctx *ctx, enum ibv_w
  * msk_cq_addfd: Adds trans' completion queue fd to the epoll wait
  * Returns 0 on success, errno value on error.
  */
-static int msk_addfd(msk_trans_t *trans, int fd, int epollfd) {
+static int msk_addfd(struct msk_trans *trans, int fd, int epollfd) {
 	int flags, ret;
 	struct epoll_event ev;
 
@@ -682,23 +680,23 @@ static int msk_delfd(int fd, int epollfd) {
 	return 0;
 }
 
-static inline int msk_cq_addfd(msk_trans_t *trans) {
+static inline int msk_cq_addfd(struct msk_trans *trans) {
 	return msk_addfd(trans, trans->comp_channel->fd, internals->cq_epollfd);
 }
 
-static inline int msk_cq_delfd(msk_trans_t *trans) {
+static inline int msk_cq_delfd(struct msk_trans *trans) {
 	return msk_delfd(trans->comp_channel->fd, internals->cq_epollfd);
 }
 
-static inline int msk_cm_addfd(msk_trans_t *trans) {
+static inline int msk_cm_addfd(struct msk_trans *trans) {
 	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd);
 }
 
-static inline int msk_cm_delfd(msk_trans_t *trans) {
+static inline int msk_cm_delfd(struct msk_trans *trans) {
 	return msk_delfd(trans->event_channel->fd, internals->cm_epollfd);
 }
 
-static inline int msk_stats_add(msk_trans_t *trans) {
+static inline int msk_stats_add(struct msk_trans *trans) {
 	int rc;
 	struct sockaddr_un sockaddr;
 
@@ -735,7 +733,7 @@ static inline int msk_stats_add(msk_trans_t *trans) {
 	return msk_addfd(trans, trans->stats_sock, internals->stats_epollfd);
 }
 
-static inline int msk_stats_del(msk_trans_t *trans) {
+static inline int msk_stats_del(struct msk_trans *trans) {
 	/* msk_delfd is called in stats thread when a close event comes in */
 	char sun_path[108];
 	snprintf(sun_path, sizeof(sun_path)-1, "%s%p", trans->stats_prefix, trans);
@@ -750,7 +748,7 @@ static inline int msk_stats_del(msk_trans_t *trans) {
  * Well, a thread. arg = trans
  */
 void *msk_stats_thread(void *arg) {
-	msk_trans_t *trans;
+	struct msk_trans *trans;
 	struct epoll_event epoll_events[EPOLL_MAX_EVENTS];
 	char stats_str[256];
 	int nfds, n, childfd;
@@ -768,7 +766,7 @@ void *msk_stats_thread(void *arg) {
 		}
 
 		for (n = 0; n < nfds; ++n) {
-			trans = (msk_trans_t*)epoll_events[n].data.ptr;
+			trans = (struct msk_trans*)epoll_events[n].data.ptr;
 
 			if (!trans) {
 				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
@@ -816,7 +814,7 @@ void *msk_stats_thread(void *arg) {
 static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event *event) {
 	int i;
 	int ret = 0;
-	msk_trans_t *trans = cm_id->context;
+	struct msk_trans *trans = cm_id->context;
 
 	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "cma_event type %s", rdma_event_str(event->event));
 
@@ -933,7 +931,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
  *
  */
 static void *msk_cm_thread(void *arg) {
-	msk_trans_t *trans;
+	struct msk_trans *trans;
 	struct rdma_cm_event *event;
 	struct epoll_event epoll_events[EPOLL_MAX_EVENTS];
 	int nfds, n;
@@ -952,7 +950,7 @@ static void *msk_cm_thread(void *arg) {
 		}
 
 		for (n = 0; n < nfds; ++n) {
-			trans = (msk_trans_t*)epoll_events[n].data.ptr;
+			trans = (struct msk_trans*)epoll_events[n].data.ptr;
 			if (!trans) {
 				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
 				continue;
@@ -1001,11 +999,11 @@ static void *msk_cm_thread(void *arg) {
  *
  * @return 0 on success, work completion status if not 0
  */
-static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
+static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag) {
 	struct ibv_wc wc[NUM_WQ_PER_POLL];
 	struct ibv_cq *ev_cq;
 	void *ev_ctx;
-	msk_ctx_t *ctx;
+	struct msk_ctx *ctx;
 	msk_data_t *data;
 	int ret, npoll, i;
 	uint32_t len;
@@ -1038,7 +1036,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 			}
 			if (wc[i].status) {
 				trans->stats.err++;
-				msk_signal_worker(trans, (msk_ctx_t *)wc[i].wr_id, wc[i].status, -1, flag);
+				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, -1, flag);
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
@@ -1056,7 +1054,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 				trans->stats.tx_pkt++;
 				trans->stats.tx_bytes += wc[i].byte_len;
 
-				ctx = (msk_ctx_t *)wc[i].wr_id;
+				ctx = (struct msk_ctx *)wc[i].wr_id;
 
 /*				@todo: check if this is different from wc[i].byte_len?
 
@@ -1085,7 +1083,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
 				}
 
-				ctx = (msk_ctx_t *)wc[i].wr_id;
+				ctx = (struct msk_ctx *)wc[i].wr_id;
 			
 				// fill all the sizes in case of multiple sge
 				len = wc[i].byte_len;
@@ -1123,7 +1121,7 @@ static int msk_cq_event_handler(msk_trans_t *trans, enum msk_lock_flag flag) {
  *
  */
 static void *msk_cq_thread(void *arg) {
-	msk_trans_t *trans;
+	struct msk_trans *trans;
 	struct epoll_event epoll_events[EPOLL_MAX_EVENTS];
 	struct timespec ts_start, ts_end;
 	int nfds, n;
@@ -1141,7 +1139,7 @@ static void *msk_cq_thread(void *arg) {
 		}
 
 		for (n = 0; n < nfds; ++n) {
-			trans = (msk_trans_t*)epoll_events[n].data.ptr;
+			trans = (struct msk_trans*)epoll_events[n].data.ptr;
 
 			if (!trans) {
 				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
@@ -1189,7 +1187,7 @@ static void *msk_cq_thread(void *arg) {
  *
  * @return void
  */
-static void msk_flush_buffers(msk_trans_t *trans) {
+static void msk_flush_buffers(struct msk_trans *trans) {
 	struct msk_ctx *ctx;
 	int i, wait, ret;
 
@@ -1209,15 +1207,15 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 
 	for (i = 0, ctx = trans->recv_buf;
 	     i < trans->qp_attr.cap.max_recv_wr;
-	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
+	     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING) {
 			ctx->used = MSK_CTX_PROCESSING;
 			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV, MSK_HAS_TRANS_LOCKS);
 		}
 
-	for (i = 0, ctx = (msk_ctx_t *)trans->send_buf;
+	for (i = 0, ctx = (struct msk_ctx *)trans->send_buf;
 	     i < trans->qp_attr.cap.max_send_wr;
-	     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
+	     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING) {
 			ctx->used = MSK_CTX_PROCESSING;
 			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND, MSK_HAS_TRANS_LOCKS);
@@ -1229,13 +1227,13 @@ static void msk_flush_buffers(msk_trans_t *trans) {
 		wait = 0;
 		for (i = 0, ctx = trans->recv_buf;
 		     i < trans->qp_attr.cap.max_recv_wr;
-		     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
+		     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
 			if (ctx->used != MSK_CTX_FREE)
 				wait++;
 
-		for (i = 0, ctx = (msk_ctx_t *)trans->send_buf;
+		for (i = 0, ctx = (struct msk_ctx *)trans->send_buf;
 		     i < trans->qp_attr.cap.max_send_wr;
-		     i++, ctx = (msk_ctx_t*)((uint8_t*)ctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
+		     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
 			if (ctx->used != MSK_CTX_FREE)
 				wait++;
 
@@ -1252,7 +1250,7 @@ static void msk_flush_buffers(msk_trans_t *trans) {
  *
  * @return void even if some stuff here can fail //FIXME?
  */
-static void msk_destroy_buffer(msk_trans_t *trans) {
+static void msk_destroy_buffer(struct msk_trans *trans) {
 	if (trans->send_buf) {
 		free(trans->send_buf);
 		trans->send_buf = NULL;
@@ -1270,7 +1268,7 @@ static void msk_destroy_buffer(msk_trans_t *trans) {
  *
  * @return void, even if the functions _can_ fail we choose to ignore it. //FIXME?
  */
-static void msk_destroy_qp(msk_trans_t *trans) {
+static void msk_destroy_qp(struct msk_trans *trans) {
 	if (trans->qp) {
 		// flush all pending receive/send buffers to error callback
 		msk_flush_buffers(trans);
@@ -1307,9 +1305,9 @@ static void msk_destroy_qp(msk_trans_t *trans) {
  *
  * @param ptrans [INOUT] pointer to the trans to destroy
  */
-void msk_destroy_trans(msk_trans_t **ptrans) {
+void msk_destroy_trans(struct msk_trans **ptrans) {
 
-	msk_trans_t *trans = *ptrans;
+	struct msk_trans *trans = *ptrans;
 
 	if (trans) {
 		trans->destroy_on_disconnect = 0;
@@ -1396,24 +1394,24 @@ void msk_destroy_trans(msk_trans_t **ptrans) {
  *
  * @return 0 on success, errno value on failure
  */
-int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
+int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 	int ret;
 
-	msk_trans_t *trans;
+	struct msk_trans *trans;
 
 	if (!ptrans || !attr) {
 		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Invalid argument");
 		return EINVAL;
 	}
 
-	trans = malloc(sizeof(msk_trans_t));
+	trans = malloc(sizeof(struct msk_trans));
 	if (!trans) {
 		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Out of memory");
 		return ENOMEM;
 	}
 
 	do {
-		memset(trans, 0, sizeof(msk_trans_t));
+		memset(trans, 0, sizeof(struct msk_trans));
 
 		trans->event_channel = rdma_create_event_channel();
 		if (!trans->event_channel) {
@@ -1545,7 +1543,7 @@ int msk_init(msk_trans_t **ptrans, msk_trans_attr_t *attr) {
  *
  * @ret 0 on success, errno value on error
  */
-static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
+static int msk_create_qp(struct msk_trans *trans, struct rdma_cm_id *cm_id) {
 	int ret;
 
 	if (rdma_create_qp(cm_id, msk_getpd(trans)->pd, &trans->qp_attr)) {
@@ -1565,7 +1563,7 @@ static int msk_create_qp(msk_trans_t *trans, struct rdma_cm_id *cm_id) {
  *
  * @return 0 on success, errno value on failure
  */
-static int msk_setup_qp(msk_trans_t *trans) {
+static int msk_setup_qp(struct msk_trans *trans) {
 	int ret;
 
 	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "trans: %p", trans);
@@ -1611,20 +1609,20 @@ static int msk_setup_qp(msk_trans_t *trans) {
 /**
  * msk_setup_buffer
  */
-static int msk_setup_buffer(msk_trans_t *trans) {
-	trans->recv_buf = malloc(trans->qp_attr.cap.max_recv_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
+static int msk_setup_buffer(struct msk_trans *trans) {
+	trans->recv_buf = malloc(trans->qp_attr.cap.max_recv_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
 	if (!trans->recv_buf) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->recv_buf");
 		return ENOMEM;
 	}
-	memset(trans->recv_buf, 0, trans->qp_attr.cap.max_recv_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
+	memset(trans->recv_buf, 0, trans->qp_attr.cap.max_recv_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
 
-	trans->send_buf = malloc(trans->qp_attr.cap.max_send_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
+	trans->send_buf = malloc(trans->qp_attr.cap.max_send_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
 	if (!trans->send_buf) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->send_buf");
 		return ENOMEM;
 	}
-	memset(trans->send_buf, 0, trans->qp_attr.cap.max_send_wr * (sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
+	memset(trans->send_buf, 0, trans->qp_attr.cap.max_send_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
 
 	return 0;
 }
@@ -1636,7 +1634,7 @@ static int msk_setup_buffer(msk_trans_t *trans) {
  *
  * @return 0 on success, errno value on failure
  */
-int msk_bind_server(msk_trans_t *trans) {
+int msk_bind_server(struct msk_trans *trans) {
 	struct rdma_addrinfo hints, *res;
 	int ret;
 
@@ -1702,8 +1700,8 @@ int msk_bind_server(msk_trans_t *trans) {
 }
 
 
-static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id *cm_id) {
-	msk_trans_t *trans = malloc(sizeof(msk_trans_t));
+static struct msk_trans *clone_trans(struct msk_trans *listening_trans, struct rdma_cm_id *cm_id) {
+	struct msk_trans *trans = malloc(sizeof(struct msk_trans));
 	struct msk_pd *pd;
 	int ret;
 
@@ -1712,7 +1710,7 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
 		return NULL;
 	}
 
-	memcpy(trans, listening_trans, sizeof(msk_trans_t));
+	memcpy(trans, listening_trans, sizeof(struct msk_trans));
 
 	trans->cm_id = cm_id;
 	trans->cm_id->context = trans;
@@ -1778,7 +1776,7 @@ static msk_trans_t *clone_trans(msk_trans_t *listening_trans, struct rdma_cm_id 
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_finalize_accept(msk_trans_t *trans) {
+int msk_finalize_accept(struct msk_trans *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
@@ -1829,12 +1827,12 @@ int msk_finalize_accept(msk_trans_t *trans) {
  *
  * @return a new trans for the child on success, NULL on failure
  */
-msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *abstime) { //TODO make it return an int an' use trans as argument
+struct msk_trans *msk_accept_one_timedwait(struct msk_trans *trans, struct timespec *abstime) { //TODO make it return an int an' use trans as argument
 
 	//TODO: timeout?
 
 	struct rdma_cm_id *cm_id = NULL;
-	msk_trans_t *child_trans = NULL;
+	struct msk_trans *child_trans = NULL;
 	int i, ret;
 
 	if (!trans || trans->state != MSK_LISTENING) {
@@ -1889,7 +1887,7 @@ msk_trans_t *msk_accept_one_timedwait(msk_trans_t *trans, struct timespec *absti
 	return child_trans;
 }
 
-msk_trans_t *msk_accept_one_wait(msk_trans_t *trans, int msleep) {
+struct msk_trans *msk_accept_one_wait(struct msk_trans *trans, int msleep) {
 	struct timespec ts;
 
 	if (msleep == 0)
@@ -1911,7 +1909,7 @@ msk_trans_t *msk_accept_one_wait(msk_trans_t *trans, int msleep) {
  * (the route and pthread_cond_signal is done in the cm thread)
  *
  */
-static int msk_bind_client(msk_trans_t *trans) {
+static int msk_bind_client(struct msk_trans *trans) {
 	struct rdma_addrinfo hints, *res;
 	int ret;
 
@@ -1978,7 +1976,7 @@ static int msk_bind_client(msk_trans_t *trans) {
  *
  * @return 0 on success, errno value on failure
  */
-int msk_finalize_connect(msk_trans_t *trans) {
+int msk_finalize_connect(struct msk_trans *trans) {
 	struct rdma_conn_param conn_param;
 	int ret;
 
@@ -2031,7 +2029,7 @@ int msk_finalize_connect(msk_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error 
  */
-int msk_connect(msk_trans_t *trans) {
+int msk_connect(struct msk_trans *trans) {
 	int ret;
 	struct msk_pd *pd;
 
@@ -2099,9 +2097,9 @@ int msk_connect(msk_trans_t *trans) {
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "posting recv");
-	msk_ctx_t *rctx;
+	struct msk_ctx *rctx;
 	int i, ret;
 
 	if (!trans || (trans->state != MSK_CONNECTED && trans->state != MSK_ROUTE_RESOLVED && trans->state != MSK_CONNECT_REQUEST)) {
@@ -2117,7 +2115,7 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 	do {
 		for (i = 0, rctx = trans->recv_buf;
 		     i < trans->qp_attr.cap.max_recv_wr;
-		     i++, rctx = (msk_ctx_t*)((uint8_t*)rctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
+		     i++, rctx = (struct msk_ctx*)((uint8_t*)rctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
 			if (!rctx->used != MSK_CTX_FREE)
 				break;
 
@@ -2132,8 +2130,6 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 
 	pthread_mutex_unlock(&trans->ctx_lock);
 
-	rctx->pos = 0;
-	rctx->next = NULL;
 	rctx->callback = callback;
 	rctx->err_callback = err_callback;
 	rctx->callback_arg = callback_arg;
@@ -2166,9 +2162,9 @@ int msk_post_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
 	return 0;
 }
 
-static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opcode, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "posting a send with op %d", opcode);
-	msk_ctx_t *wctx;
+	struct msk_ctx *wctx;
 	int i, ret;
 	uint32_t totalsize = 0;
 
@@ -2195,9 +2191,9 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 	pthread_mutex_lock(&trans->ctx_lock);
 
 	do {
-		for (i = 0, wctx = (msk_ctx_t *)trans->send_buf;
+		for (i = 0, wctx = (struct msk_ctx *)trans->send_buf;
 		     i < trans->qp_attr.cap.max_send_wr;
-		     i++, wctx = (msk_ctx_t*)((uint8_t*)wctx + sizeof(msk_ctx_t) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
+		     i++, wctx = (struct msk_ctx*)((uint8_t*)wctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
 			if (!wctx->used != MSK_CTX_FREE)
 				break;
 
@@ -2212,8 +2208,6 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
 
 	pthread_mutex_unlock(&trans->ctx_lock);
 
-	wctx->pos = 0;
-	wctx->next = NULL;
 	wctx->callback = callback;
 	wctx->err_callback = err_callback;
 	wctx->callback_arg = callback_arg;
@@ -2278,7 +2272,7 @@ static int msk_post_send_generic(msk_trans_t *trans, enum ibv_wr_opcode opcode, 
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_post_n_send(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+int msk_post_n_send(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	return msk_post_send_generic(trans, IBV_WR_SEND, data, num_sge, NULL, callback, err_callback, callback_arg);
 }
 
@@ -2286,7 +2280,7 @@ int msk_post_n_send(msk_trans_t *trans, msk_data_t *data, int num_sge, ctx_callb
  * msk_wait_callback: send/recv callback that just unlocks a mutex.
  *
  */
-static void msk_wait_callback(msk_trans_t *trans, msk_data_t *data, void *arg) {
+static void msk_wait_callback(struct msk_trans *trans, msk_data_t *data, void *arg) {
 	pthread_mutex_t *lock = arg;
 	pthread_mutex_unlock(lock);
 }
@@ -2301,7 +2295,7 @@ static void msk_wait_callback(msk_trans_t *trans, msk_data_t *data, void *arg) {
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_wait_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge) {
+int msk_wait_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -2325,7 +2319,7 @@ int msk_wait_n_recv(msk_trans_t *trans, msk_data_t *data, int num_sge) {
  *
  * @return 0 on success, the value of errno on error
  */
-int msk_wait_n_send(msk_trans_t *trans, msk_data_t *data, int num_sge) {
+int msk_wait_n_send(struct msk_trans *trans, msk_data_t *data, int num_sge) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -2347,15 +2341,15 @@ int msk_wait_n_send(msk_trans_t *trans, msk_data_t *data, int num_sge) {
 // server specific:
 
 
-int msk_post_n_read(msk_trans_t *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+int msk_post_n_read(struct msk_trans *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	return msk_post_send_generic(trans, IBV_WR_RDMA_READ, data, num_sge, rloc, callback, err_callback, callback_arg);
 }
 
-int msk_post_n_write(msk_trans_t *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
+int msk_post_n_write(struct msk_trans *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
 	return msk_post_send_generic(trans, IBV_WR_RDMA_WRITE, data, num_sge, rloc, callback, err_callback, callback_arg);
 }
 
-int msk_wait_n_read(msk_trans_t *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc) {
+int msk_wait_n_read(struct msk_trans *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -2372,7 +2366,7 @@ int msk_wait_n_read(msk_trans_t *trans, msk_data_t *data, int num_sge, msk_rloc_
 }
 
 
-int msk_wait_n_write(msk_trans_t *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc) {
+int msk_wait_n_write(struct msk_trans *trans, msk_data_t *data, int num_sge, msk_rloc_t *rloc) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
@@ -2389,19 +2383,19 @@ int msk_wait_n_write(msk_trans_t *trans, msk_data_t *data, int num_sge, msk_rloc
 }
 
 
-struct sockaddr *msk_get_dst_addr(msk_trans_t *trans) {
+struct sockaddr *msk_get_dst_addr(struct msk_trans *trans) {
 	return rdma_get_peer_addr(trans->cm_id);
 }
 
-struct sockaddr *msk_get_src_addr(msk_trans_t *trans) {
+struct sockaddr *msk_get_src_addr(struct msk_trans *trans) {
 	return rdma_get_local_addr(trans->cm_id);
 }
 
-uint16_t msk_get_src_port(msk_trans_t *trans) {
+uint16_t msk_get_src_port(struct msk_trans *trans) {
 	return rdma_get_src_port(trans->cm_id);
 }
 
-uint16_t msk_get_dst_port(msk_trans_t *trans) {
+uint16_t msk_get_dst_port(struct msk_trans *trans) {
 	return rdma_get_dst_port(trans->cm_id);
 }
 

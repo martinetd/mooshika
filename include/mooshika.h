@@ -38,8 +38,6 @@
 typedef struct msk_trans msk_trans_t;
 typedef struct msk_trans_attr msk_trans_attr_t;
 
-typedef struct msk_ctx msk_ctx_t;
-
 /**
  * \struct msk_data
  * data size and content to send/just received
@@ -113,12 +111,12 @@ struct msk_trans {
 	char *node;			/**< The remote peer's hostname */
 	char *port;			/**< The service port (or name) */
 	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
-	int server;			/**< 0 if client, number of connections to accept on server, -1 (MSK_SERVER_CHILD) if server's accepted connection */
+	int server;			/**< 0 if client, connection backlog on server, -1 (MSK_SERVER_CHILD) if server's accepted connection */
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
 	uint32_t debug;
 	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
-	msk_ctx_t *send_buf;		/**< pointer to actual context data */
-	msk_ctx_t *recv_buf;		/**< pointer to actual context data */
+	struct msk_ctx *send_buf;		/**< pointer to actual context data */
+	struct msk_ctx *recv_buf;		/**< pointer to actual context data */
 	pthread_mutex_t ctx_lock;	/**< lock for contexts */
 	pthread_cond_t ctx_cond;	/**< cond for contexts */
 	pthread_mutex_t cm_lock;	/**< lock for connection events */
@@ -133,7 +131,7 @@ struct msk_trans {
 struct msk_trans_attr {
 	disconnect_callback_t disconnect_callback;
 	int debug;			/**< verbose output to stderr if set */
-	int server;			/**< 0 if client, number of connections to accept on server */
+	int server;			/**< 0 if client, connection backlog on server */
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
