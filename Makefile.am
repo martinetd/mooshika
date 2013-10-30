@@ -18,11 +18,13 @@ rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS:
 rpmdirs: rpm/SPECS rpm/SOURCES rpm/RPMS rpm/BUILD rpm/SRPMS
 
 clean-local:
-	rm -rf doxygen
+	rm -rf doc/doxygen
 
 doc:
-	doxygen ./doxygen.conf
-	cd doxygen/latex; make pdf
+	doxygen ./doc/doxygen.conf
+	cd doc/doxygen/latex; make pdf
+	cd doc; asciidoc DESIGN; a2x -fpdf DESIGN
+	cd doc/man; asciidoc rcat.1.txt; a2x -fmanpage rcat.1.txt; a2x -fpdf rcat.1.txt
 
 EXTRA_DIST=libmooshika.spec \
            src/utils.h \

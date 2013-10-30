@@ -1,0 +1,90 @@
+RCAT(1)
+=======
+:doctype: manpage
+
+NAME
+----
+rcat - RDMA cat (netcat-alike using rdmacm/ibverb-compliant networking)
+
+SYNOPSIS
+--------
+*rcat* {-s|-S addr|-c addr} [-p port] [-m] [-v] [-q] [-b blocksize] [-D statsprefix] [-d]
+
+DESCRIPTION
+-----------
+rcat is a basic tool using RDMA send/recv with a very simple protocol. It probably cannot interface to another RDMA server/client directly, but it can at least be used to check that the connection establishes properly, check latency or naive bandwidth (see EXAMPLES below).
+
+OPTIONS
+-------
+There is only one mandatory option, is rcat used as a client (and if so what's the server) or as a server? It can be one of the following:
+
+*-c, --client* 'server'::
+  We're a client, connect to 'server'. 'server' can be an IP address or hostname pointing to an IP.
+
+*-s, --server*::
+  We're a server, bind to all possible interfaces and IPs.
+
+*-S 'IP'*::
+  We're a server, but bind to a specific IP (and only on the interface associated to it)
+
+There are multiple optional options:
+
+*-p, --port* 'port'::
+  Port to use to bind or to connect to. 'port' can be either a numeric port or a service name, e.g. ``ssh'', resolvable by getaddrinfo. Defaults to 1235.
+
+*-m, --multi*::
+  Tell the server to accept more than one connection. A new thread will be spawned to handle each incoming connection.
+
+*-v, --verbose*::
+  Increase verbosity everytime it appears, e.g. -vvv will be more verbose than -v. Actually switches one more MSK_DEBUG_* flag on everytime.
+
+*-q, --quiet*::
+  Opposite operation.
+
+*-b, --block-size* 'size'::
+  Sets the block-size to 'size'. This is the maximum size allowed for a single RDMA send operation.
+
+*-d*::
+  Enables internal stats and prints them when the connection closes.
+
+*-D, --stats* prefix::
+  Enables stats and provide an unix socket interface to these, which can be used with `nc -u`. The socket name will be 'prefix'<threadID> (because a server can have multiple concurrent threads)
+
+EXAMPLES
+--------
+
+.Bandwidth
+Bandwidth can be checked with one or multiple dd and big chunks. rcat is _synchronous_, when a chunk is sent it will wait for the other side to receive the chunk, send an acknowledgement and will only sent the next chunk when it is received. This means that a single rcat client will never use the maximum bandwidth.
+
+====
+  server$ rcat -s -m > /dev/null
+  client$ dd if=/dev/zero bs=1M count=4096 | rcat -c <dest>
+4294967296 bytes (4.3 GB) copied, 3.25225 s, 1.3 GB/s
+  client$ for i in `seq 1 4`; do dd if=/dev/zero bs=1M count=4096 | rcat -c <dest> & done; wait
+4294967296 bytes (4.3 GB) copied, 5.17072 s, 831 MB/s
+4294967296 bytes (4.3 GB) copied, 5.17226 s, 830 MB/s
+4294967296 bytes (4.3 GB) copied, 5.17213 s, 830 MB/s
+4294967296 bytes (4.3 GB) copied, 5.17315 s, 830 MB/s
+====
+
+.Latency
+Lacency can be checked just the same with much smaller chunk. Keeping in mind that each chunk means a round-way trip, latency can be easily deducted as time/count.
+
+----
+  server$ rcat -s -m -b 10 > /dev/null
+  client$ dd if=/dev/zero bs=10 count=100000 | rcat -c <dest> -b 10
+1000000 bytes (1.0 MB) copied, 3.48947 s, 287 kB/s
+-> 3.48947/100k = ~35us round trip
+----
+
+SEE ALSO
+--------
+mooshika(3), rmitm(1), rreplay(1)
+
+AUTHORS
+-------
+mooshika and its tools have been written by Dominique Martinet <dominique.martinet@cea.fr>
+
+RESOURCES
+---------
+https://github.com/martinetd/mooshika
