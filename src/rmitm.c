@@ -209,7 +209,7 @@ static void print_help(char **argv) {
 		"	-E, --rand-byte <proba>: with ratio between 0.0 and 1.0,\n"
 		"		probability for each byte to be changed randomly\n"
 		"		The data is dumped _after_ error injection\n"
-		"	-e, --flip-byte <proba>: same, but there's only one bit flip\n"
+		"	-e, --flip-bit <proba>: same, but there's only one bit flip\n"
 		"	-v, --verbose: verbose, more v for more verbosity\n"
 		"	-q, --quiet: quiet output\n",
 		DEFAULT_HARD_TRUNC_LEN, DEFAULT_TRUNC_LEN,
@@ -406,7 +406,7 @@ int main(int argc, char **argv) {
 		{ "file",	required_argument,	0,		'f' },
 		{ "truncate",	required_argument,	0,		't' },
 		{ "rand-byte",	required_argument,	0,		'E' },
-		{ "flip-byte",	required_argument,	0,		'e' },
+		{ "flip-bit",	required_argument,	0,		'e' },
 		{ 0,		0,			0,		 0  }
 	};
 

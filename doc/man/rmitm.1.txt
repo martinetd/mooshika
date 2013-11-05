@@ -1,0 +1,85 @@
+RMITM(1)
+========
+:doctype: manpage
+
+NAME
+----
+rmitm - RDMA man in the middle
+
+SYNOPSIS
+--------
+*rmitm* {-s|-S addr} port -c addr port [-f pcap.out] [-t size] [-b bsize] [-r recv-num] [-E proba] [-e proba] [-v] [-q]
+
+DESCRIPTION
+-----------
+rmitm - RDMA man in the middle. Used to dump RDMA send/recv traffic with a voluntary client, connecting to rmitm.
+
+OPTIONS
+-------
+There are two mandatory options, what should rmitm listen on and where should it connect when it receives a connection itself:
+
+*-c, --client* 'server' 'port'::
+  Connect to 'server' on 'port'. 'server' can be an IP address or hostname pointing to an IP, 'port' can be numeric or a service name.
+
+*-s, --server* 'port'::
+  Bind to all possible interfaces and IPs on 'port'.
+
+*-S 'IP' 'port'*::
+  Bind to a specific 'IP' (and only on the interface associated to it) on 'port'.
+
+There are multiple optional options:
+
+*-f, --file* 'file'::
+  Dump pcap output to 'file'. Can be ``-'' for stdout.
+
+*-t, --truncate* 'size'::
+  Truncate packets to given 'size'. Wireshark cannot handle pcap packets bigger than 64k, but if you are going to replay the dump you will want to make it bigger.
+  Defaults to 4k.
+
+*-b, --block-size* 'size'::
+  Maximum size of the packets rmitm will be able to handle (receive and forward).
+  Defaults to 1M.
+
+*-r, --recv-num* 'num'::
+  Number of packets we can receive at once.
+  Defaults to 10.
+
+*-E, --rand-byte* 'proba'::
+*-e, --flip-bit* 'proba'::
+  Probability of randomizing completely or flipping a couple of bits in a given byte.
+
+*-v, --verbose*::
+  Increase verbosity everytime it appears, e.g. -vvv will be more verbose than -v. Actually switches one more MSK_DEBUG_* flag on everytime.
+
+*-q, --quiet*::
+  Opposite operation.
+
+EXAMPLES
+--------
+
+.Wireshark
+You can interface rmitm directly with wireshark, dumping on a different host. (the ``& read; kill $!'' part kills rmitm when the ssh connection closes).
+
+----
+  station$ ssh server 'rmitm -c remote 5640 -s 5640 -w - & read; kill $!' | wireshark -i - -k
+----
+
+.rreplay
+You can keep the dump, with error injection, and replay the incrimined dump later.
+
+----
+  server$ rmitm -c remote 5640 -s 5640 -w pcap.out -t 1M -E 0.02 -e 0.02
+  server$ rreplay -c remote 5640 -f pcap.out -n
+----
+
+SEE ALSO
+--------
+mooshika(3), rcat(1), rreplay(1)
+
+AUTHORS
+-------
+mooshika and its tools have been written by Dominique Martinet <dominique.martinet@cea.fr>
+
+RESOURCES
+---------
+https://github.com/martinetd/mooshika

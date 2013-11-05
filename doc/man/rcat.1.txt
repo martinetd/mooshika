@@ -25,7 +25,7 @@ There is only one mandatory option, is rcat used as a client (and if so what's t
   We're a server, bind to all possible interfaces and IPs.
 
 *-S 'IP'*::
-  We're a server, but bind to a specific IP (and only on the interface associated to it)
+  We're a server, but bind to a specific 'IP' (and only on the interface associated to it).
 
 There are multiple optional options:
 
