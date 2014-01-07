@@ -17,27 +17,25 @@
 #define atomic_sub(x,i) __sync_sub_and_fetch(&x, i)
 #define atomic_mask(x,i) __sync_and_and_fetch(&x, i)
 
-static inline int set_size(uint32_t *val, char *unit) {
-	switch(unit[0]) {
-		case 'k':
-		case 'K':
-			*val *= 1024;
-			break;
-		case 'm':
-		case 'M':
-			*val *= 1024 * 1024;
-			break;
-		case 'g':
-		case 'G':
-			*val *= 1024 * 1024 * 1024;
-			break;
-		default:
-			ERROR_LOG("unknown unit '%c'", unit[0]);
-			return EINVAL;
-	}
-
-	return 0;
-}
+#define set_size(val, unit) do {                                 \
+	switch(unit[0]) {                                        \
+		case 'k':                                        \
+		case 'K':                                        \
+			val *= 1024;                             \
+			break;                                   \
+		case 'm':                                        \
+		case 'M':                                        \
+			val *= 1024 * 1024;                      \
+			break;                                   \
+		case 'g':                                        \
+		case 'G':                                        \
+			val *= 1024 * 1024 * 1024;               \
+			break;                                   \
+		default:                                         \
+			ERROR_LOG("unknown unit '%c'", unit[0]); \
+			val = 0;                                 \
+	}                                                        \
+} while (0)
 
 static inline void sub_timespec(uint64_t *new, struct timespec *x, struct timespec *y) {
 	if (y->tv_nsec < x->tv_nsec) {

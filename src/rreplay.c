@@ -249,7 +249,7 @@ int main(int argc, char **argv) {
 					break;
 				}
 				if (tmp_s[0] != 0) {
-					set_size(&block_size, tmp_s);
+					set_size(block_size, tmp_s);
 				}
 				INFO_LOG(trans_attr.debug > 1, "block size: %u", block_size);
 				break;

@@ -307,7 +307,7 @@ int main(int argc, char **argv) {
 					break;
 				}
 				if (tmp_s[0] != 0) {
-					set_size(&thread_arg.block_size, tmp_s);
+					set_size(thread_arg.block_size, tmp_s);
 				}
 				INFO_LOG(attr.debug > 1, "block size: %u", thread_arg.block_size);
 				break;

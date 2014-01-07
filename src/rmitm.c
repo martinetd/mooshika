@@ -45,6 +45,7 @@
 #include <sys/stat.h>	//open
 #include <fcntl.h>	//open
 #include <signal.h>
+#include <inttypes.h> // PRIu64
 
 #include <pcap/pcap.h>
 #include <linux/if_arp.h>
@@ -65,26 +66,25 @@ struct datalock {
 };
 
 struct privatedata {
-	pcap_dumper_t *pcap_dumper;
 	uint32_t seq_nr;
 	msk_trans_t *o_trans;
 	struct datalock *first_datalock;
-	pthread_mutex_t *plock;
-	pthread_cond_t *pcond;
-	int rand_thresh;
-	int flip_thresh;
-	uint32_t trunc;
-	uint32_t hard_trunc;
+	struct thread_arg *targ;
 };
 
 struct thread_arg {
-	pcap_dumper_t *pcap_dumper;
+	pcap_dumper_t **p_pcap_dumper;
+	char *pcap_filename;
+	pcap_t *pcap;
 	uint32_t block_size;
 	uint32_t recv_num;
 	int rand_thresh;
 	int flip_thresh;
 	uint32_t trunc;
 	uint32_t hard_trunc;
+	uint64_t file_rotate;
+	pthread_mutex_t *plock;
+	pthread_cond_t *pcond;
 };
 
 static int run_threads = 1;
@@ -138,9 +138,9 @@ static void callback_disconnect(msk_trans_t *trans) {
 	if (!priv)
 		return;
 
-	pthread_mutex_lock(priv->plock);
-	pthread_cond_broadcast(priv->pcond);
-	pthread_mutex_unlock(priv->plock);
+	pthread_mutex_lock(priv->targ->plock);
+	pthread_cond_broadcast(priv->targ->pcond);
+	pthread_mutex_unlock(priv->targ->plock);
 }
 
 static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -155,14 +155,14 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	}
 
 	/* error injection */
-	if (priv->flip_thresh) {
+	if (priv->targ->flip_thresh) {
 		uint8_t *cur;
 		int r;
 		for (cur = pdata->data; cur < pdata->data + pdata->size; cur++) {
 			r = rand();
-			if (r < priv->rand_thresh) {
+			if (r < priv->targ->rand_thresh) {
 				*cur = (uint8_t)r;
-			} else if (r < priv->flip_thresh) {
+			} else if (r < priv->targ->flip_thresh) {
 				*cur ^= r % 8;
 			}
 		}
@@ -172,8 +172,8 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	msk_post_send(priv->o_trans, pdata, callback_send, callback_error, datalock);
 
 	gettimeofday(&pcaphdr.ts, NULL);
-	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, priv->hard_trunc);
-	pcaphdr.caplen = min(pcaphdr.len, priv->trunc);
+	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, priv->targ->hard_trunc);
+	pcaphdr.caplen = min(pcaphdr.len, priv->targ->trunc);
 
 	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
@@ -182,14 +182,14 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	/* Need the lock both for writing in pcap_dumper AND for ack_nr,
 	 * otherwise some seq numbers are not ordered properly.
 	 */
-	pthread_mutex_lock(priv->plock);
+	pthread_mutex_lock(priv->targ->plock);
 	packet->tcp.th_seq_nr = priv->seq_nr;
 	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pcaphdr.len - sizeof(struct pkt_hdr));
 	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 	ipv6_tcp_checksum(packet);
 
-	pcap_dump((u_char*)priv->pcap_dumper, &pcaphdr, (u_char*)packet);
-	pthread_mutex_unlock(priv->plock);
+	pcap_dump((u_char*)*priv->targ->p_pcap_dumper, &pcaphdr, (u_char*)packet);
+	pthread_mutex_unlock(priv->targ->plock);
 	pthread_mutex_unlock(&datalock->lock);
 }
 
@@ -202,6 +202,7 @@ static void print_help(char **argv) {
 		"	-S addr port: listen on given address/port\n"
 		"Optional arguments:\n"
 		"	-f, --file pcap.out: output file\n"
+		"	-R, --rotate size: rotate output file (to file.1) at size\n"
 		"	-t, --truncate size: size to truncate packets at (with tcp header)\n"
 		"		If viewed in wireshark, max is %u (default: %u)\n"
 		"	-b, --block-size size: size of packets to send (default: %u)\n"
@@ -218,12 +219,29 @@ static void print_help(char **argv) {
 }
 
 static void* flush_thread(void *arg) {
-	pcap_dumper_t **p_pcap_dumper = arg;
+	struct thread_arg *thread_arg = arg;
+	long pos = strlen(thread_arg->pcap_filename) + 3;
+	char *backpath = alloca(pos);
+	snprintf(backpath, pos, "%s.1", thread_arg->pcap_filename);
+	pcap_dumper_t **p_pcap_dumper = thread_arg->p_pcap_dumper;
 	/* keep this value for close or race between check in while and dump_flush */
-	pcap_dumper_t *pcap_dumper = *p_pcap_dumper;
+	pcap_dumper_t *pcap_dumper;
 
-	while (*p_pcap_dumper) {
+	while ((pcap_dumper = *p_pcap_dumper)) {
 		pcap_dump_flush(pcap_dumper);
+		if (thread_arg->file_rotate) {
+			pos = pcap_dump_ftell(pcap_dumper);
+			/* on error pos == -1 < file_rotate, just continue */
+			if (pos > thread_arg->file_rotate) {
+				pthread_mutex_lock(thread_arg->plock);
+				pcap_dump_flush(pcap_dumper);
+				pcap_dump_close(pcap_dumper);
+				rename(thread_arg->pcap_filename, backpath);
+				TEST_NZ(*p_pcap_dumper = pcap_dump_open(thread_arg->pcap, thread_arg->pcap_filename));
+				pthread_mutex_unlock(thread_arg->plock);
+			}
+		}
+
 		sleep(1);
 	}
 
@@ -242,8 +260,6 @@ static void *setup_thread(void *arg){
 	int i;
 	struct privatedata *s_priv, *c_priv;
 	msk_trans_t *child_trans, *c_trans;
-	pthread_mutex_t lock;
-	pthread_cond_t cond;
 
 	TEST_NZ(child_trans = arg);
 	TEST_NZ(c_trans = child_trans->private_data);
@@ -314,17 +330,8 @@ static void *setup_thread(void *arg){
 	s_priv = child_trans->private_data;
 	c_priv = c_trans->private_data;
 
-	s_priv->rand_thresh = thread_arg->rand_thresh;
-	c_priv->rand_thresh = thread_arg->rand_thresh;
-	s_priv->flip_thresh = thread_arg->flip_thresh;
-	c_priv->flip_thresh = thread_arg->flip_thresh;
-
-	s_priv->pcap_dumper = thread_arg->pcap_dumper;
-	c_priv->pcap_dumper = thread_arg->pcap_dumper;
-	s_priv->trunc = thread_arg->trunc;
-	c_priv->trunc = thread_arg->trunc;
-	s_priv->hard_trunc = thread_arg->hard_trunc;
-	c_priv->hard_trunc = thread_arg->hard_trunc;
+	s_priv->targ = thread_arg;
+	c_priv->targ = thread_arg;
 
 	c_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
 	s_priv->seq_nr = pkt_hdr.tcp.th_seq_nr;
@@ -335,22 +342,12 @@ static void *setup_thread(void *arg){
 	s_priv->first_datalock = datalock;
 	c_priv->first_datalock = datalock + thread_arg->recv_num;
 
-	memset(&lock, 0, sizeof(pthread_mutex_t));
-	memset(&cond, 0, sizeof(pthread_cond_t));
-	pthread_mutex_init(&lock, NULL);
-	pthread_cond_init(&cond, NULL);
-	c_priv->plock = &lock;
-	s_priv->plock = &lock;
-	s_priv->pcond = &cond;
-	c_priv->pcond = &cond;
-
-
 	for (i=0; i<thread_arg->recv_num; i++) {
 		TEST_Z(msk_post_recv(c_trans, (&c_priv->first_datalock[i])->data, callback_recv, callback_error, &c_priv->first_datalock[i]));
 		TEST_Z(msk_post_recv(child_trans, (&s_priv->first_datalock[i])->data, callback_recv, callback_error, &s_priv->first_datalock[i]));
 	}
 
-	pthread_mutex_lock(&lock);
+	pthread_mutex_lock(thread_arg->plock);
 
 	/* finalize_connect first, finalize_accept second */
 	TEST_Z(msk_finalize_connect(c_trans));
@@ -359,14 +356,15 @@ static void *setup_thread(void *arg){
 	ERROR_LOG("New connection setup\n");
 
 	/* Wait till either connection has a disconnect callback */
-	pthread_cond_wait(&cond, &lock);
-	pthread_mutex_unlock(&lock);
+	while (c_trans->state == MSK_CONNECTED &&
+	       child_trans->state == MSK_CONNECTED) {
+		pthread_cond_wait(thread_arg->pcond, thread_arg->plock);
+	}
+	pthread_mutex_unlock(thread_arg->plock);
 
 	msk_destroy_trans(&c_trans);
 	msk_destroy_trans(&child_trans);
 
-	pthread_cond_destroy(&cond);
-	pthread_mutex_destroy(&lock);
 	free(c_priv);
 	free(s_priv);
 	free(datalock);
@@ -382,10 +380,11 @@ int main(int argc, char **argv) {
 	msk_trans_t *c_trans;
 	msk_trans_attr_t s_attr;
 	msk_trans_attr_t c_attr;
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
 
 	pthread_t thrid, flushthrid;
 
-	char *pcap_file;
 	pcap_t *pcap;
 	pcap_dumper_t *pcap_dumper;
 	double double_proba;
@@ -403,6 +402,7 @@ int main(int argc, char **argv) {
 		{ "quiet",	no_argument,		0,		'q' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ "recv-num",	required_argument,	0,		'r' },
+		{ "rotate",	required_argument,	0,		'R' },
 		{ "file",	required_argument,	0,		'f' },
 		{ "truncate",	required_argument,	0,		't' },
 		{ "rand-byte",	required_argument,	0,		'E' },
@@ -426,10 +426,10 @@ int main(int argc, char **argv) {
 	c_attr.disconnect_callback = callback_disconnect;
 	s_attr.worker_count = -1;
 	c_attr.worker_count = -1;
-	pcap_file = "pcap.out";
+	thread_arg.pcap_filename = "pcap.out";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvqE:e:s:S:c:w:b:f:r:t:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvqE:e:s:S:c:w:b:f:r:t:R:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -477,7 +477,19 @@ int main(int argc, char **argv) {
 				ERROR_LOG("-w has become deprecated, use -f or --file now. Proceeding anyway");
 				/* fallthrough */
 			case 'f':
-				pcap_file = optarg;
+				thread_arg.pcap_filename = optarg;
+				break;
+			case 'R':
+				thread_arg.file_rotate = strtoull(optarg, &tmp_s, 0);
+				if (errno || thread_arg.file_rotate == 0) {
+					ERROR_LOG("Invalid rotate length, assuming no truncate");
+					break;
+				}
+				if (tmp_s[0] != 0) {
+					set_size(thread_arg.file_rotate, tmp_s);
+				}
+				INFO_LOG(c_attr.debug >1, "rotate length: %"PRIu64, thread_arg.file_rotate);
+
 				break;
 			case 't':
 				thread_arg.trunc = strtoul(optarg, &tmp_s, 0);
@@ -486,7 +498,7 @@ int main(int argc, char **argv) {
 					break;
 				}
 				if (tmp_s[0] != 0) {
-					set_size(&thread_arg.trunc, tmp_s);
+					set_size(thread_arg.trunc, tmp_s);
 				}
 				INFO_LOG(c_attr.debug > 1, "truncate length: %u", thread_arg.trunc);
 				break;
@@ -497,7 +509,7 @@ int main(int argc, char **argv) {
 					break;
 				}
 				if (tmp_s[0] != 0) {
-					set_size(&thread_arg.block_size, tmp_s);
+					set_size(thread_arg.block_size, tmp_s);
 				}
 				INFO_LOG(c_attr.debug > 1, "block size: %u", thread_arg.block_size);
 				break;
@@ -541,6 +553,12 @@ int main(int argc, char **argv) {
 		exit(EINVAL);
 	}
 
+	if (thread_arg.file_rotate && strncmp(thread_arg.pcap_filename, "-", 2) == 0) {
+		ERROR_LOG("Can't rotate stdout!");
+		print_help(argv);
+		exit(EINVAL);
+	}
+
 	if (thread_arg.block_size == 0)
 		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 	if (thread_arg.recv_num == 0)
@@ -571,10 +589,18 @@ int main(int argc, char **argv) {
 	TEST_Z(msk_bind_server(s_trans));
 
 	pcap = pcap_open_dead(DLT_RAW, thread_arg.hard_trunc);
-	TEST_NZ(pcap_dumper = pcap_dump_open(pcap, pcap_file));
-	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &pcap_dumper));
+	TEST_NZ(pcap_dumper = pcap_dump_open(pcap, thread_arg.pcap_filename));
+	TEST_Z(pthread_create(&flushthrid, NULL, flush_thread, &thread_arg));
 
-	thread_arg.pcap_dumper = pcap_dumper;
+	thread_arg.pcap = pcap;
+	thread_arg.p_pcap_dumper = &pcap_dumper;
+
+	memset(&lock, 0, sizeof(pthread_mutex_t));
+	memset(&cond, 0, sizeof(pthread_cond_t));
+	pthread_mutex_init(&lock, NULL);
+	pthread_cond_init(&cond, NULL);
+	thread_arg.plock = &lock;
+	thread_arg.pcond = &cond;
 
 	signal(SIGINT, sigHandler);
 	signal(SIGHUP, sigHandler);
@@ -601,6 +627,11 @@ int main(int argc, char **argv) {
 
 	pcap_dumper = NULL;
 	pthread_join(flushthrid, NULL);
+
+	pcap_close(pcap);
+
+	pthread_cond_destroy(&cond);
+	pthread_mutex_destroy(&lock);
 
 	msk_destroy_trans(&s_trans);
 
