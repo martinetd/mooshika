@@ -120,7 +120,7 @@ struct worker_pool {
 	int m_efd;
 };
 
-struct msk_internals {
+struct msk_global_state {
 	pthread_mutex_t lock;
 	int debug;
 	pthread_t cm_thread;		/**< Thread id for connection manager */
@@ -135,42 +135,41 @@ struct msk_internals {
 
 /* GLOBAL VARIABLES */
 
-static struct msk_internals *internals = NULL;
-
+static struct msk_global_state *msk_global_state = NULL;
 
 void __attribute__ ((constructor)) msk_internals_init(void) {
-	internals = malloc(sizeof(*internals));
-	if (!internals) {
+	msk_global_state = malloc(sizeof(*msk_global_state));
+	if (!msk_global_state) {
 		ERROR_LOG("Out of memory");
 	}
 
-	memset(internals, 0, sizeof(*internals));
+	memset(msk_global_state, 0, sizeof(*msk_global_state));
 
-	internals->run_threads = 0;
-	pthread_mutex_init(&internals->lock, NULL);
+	msk_global_state->run_threads = 0;
+	pthread_mutex_init(&msk_global_state->lock, NULL);
 }
 
 void __attribute__ ((destructor)) msk_internals_fini(void) {
 
-	if (internals) {
-		internals->run_threads = 0;
+	if (msk_global_state) {
+		msk_global_state->run_threads = 0;
 
-		if (internals->cm_thread) {
-			pthread_join(internals->cm_thread, NULL);
-			internals->cm_thread = 0;
+		if (msk_global_state->cm_thread) {
+			pthread_join(msk_global_state->cm_thread, NULL);
+			msk_global_state->cm_thread = 0;
 		}
-		if (internals->cq_thread) {
-			pthread_join(internals->cq_thread, NULL);
-			internals->cq_thread = 0;
+		if (msk_global_state->cq_thread) {
+			pthread_join(msk_global_state->cq_thread, NULL);
+			msk_global_state->cq_thread = 0;
 		}
-		if (internals->stats_thread) {
-			pthread_join(internals->stats_thread, NULL);
-			internals->stats_thread = 0;
+		if (msk_global_state->stats_thread) {
+			pthread_join(msk_global_state->stats_thread, NULL);
+			msk_global_state->stats_thread = 0;
 		}
 
-		pthread_mutex_destroy(&internals->lock);
-		free(internals);
-		internals = NULL;
+		pthread_mutex_destroy(&msk_global_state->lock);
+		free(msk_global_state);
+		msk_global_state = NULL;
 	}
 }
 
@@ -304,7 +303,7 @@ msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
 	msk_rloc_t *rloc;
 	rloc = malloc(sizeof(msk_rloc_t));
 	if (!rloc) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Out of memory!");
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Out of memory!");
 		return NULL;
 	}
 
@@ -337,22 +336,22 @@ static inline int msk_create_thread(pthread_t *thrid, void *(*start_routine)(voi
 
 	/* Init for thread parameter (mostly for scheduling) */
 	if ((ret = pthread_attr_init(&attr)) != 0) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "can't init pthread's attributes: %s (%d)", strerror(ret), ret);
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "can't init pthread's attributes: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
 	if ((ret = pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM)) != 0) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "can't set pthread's scope: %s (%d)", strerror(ret), ret);
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "can't set pthread's scope: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
 	if ((ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE)) != 0) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "can't set pthread's join state: %s (%d)", strerror(ret), ret);
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "can't set pthread's join state: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
 	if ((ret = pthread_attr_setstacksize(&attr, THREAD_STACK_SIZE)) != 0) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "can't set pthread's stack size: %s (%d)", strerror(ret), ret);
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "can't set pthread's stack size: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
@@ -362,23 +361,23 @@ static inline int msk_create_thread(pthread_t *thrid, void *(*start_routine)(voi
 static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_routine)(void*), void *arg, int *epollfd) {
 	int ret;
 
-	pthread_mutex_lock(&internals->lock);
+	pthread_mutex_lock(&msk_global_state->lock);
 	if (*thrid == 0) do {
 		*epollfd = epoll_create(10);
 		if (*epollfd == -1) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll_create failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "epoll_create failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
 		if ((ret = msk_create_thread(thrid, start_routine, arg))) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not create thread: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Could not create thread: %s (%d)", strerror(ret), ret);
 			*thrid = 0;
 			break;
 		}
 	} while (0);
 
-	pthread_mutex_unlock(&internals->lock);
+	pthread_mutex_unlock(&msk_global_state->lock);
 	return 0;
 }
 
@@ -440,7 +439,7 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 			break;
 
 		default:
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "worker thread got weird opcode: %d", opcode);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "worker thread got weird opcode: %d", opcode);
 	}
 	return;
 }
@@ -451,7 +450,7 @@ static void* msk_worker_thread(void *arg) {
 	uint64_t n;
 	int i;
 
-	while (internals->run_threads > 0) {
+	while (msk_global_state->run_threads > 0) {
 
 		if (pool->w_count > 0) {
 			i = atomic_dec(pool->w_count);
@@ -466,22 +465,22 @@ static void* msk_worker_thread(void *arg) {
 			}
 		} else {
 			if (eventfd_read(pool->w_efd, &n) || n > INT_MAX) {
-				INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
+				INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
 				continue;
 			}
-			if (internals->run_threads == 0)
+			if (msk_global_state->run_threads == 0)
 				break;
 			printf("worker: %d\n", (int)n);
 			atomic_add(pool->w_count, (int)n);
 			continue;
 		}
 
-		INFO_LOG(internals->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "thread %lx, depopping wd index %i, count %i, trans %p, ctx %p, used %i", pthread_self(), pool->w_head, pool->w_count, pool->wd_queue[i].trans, pool->wd_queue[i].ctx, pool->wd_queue[i].ctx->used);
+		INFO_LOG(msk_global_state->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "thread %lx, depopping wd index %i, count %i, trans %p, ctx %p, used %i", pthread_self(), pool->w_head, pool->w_count, pool->wd_queue[i].trans, pool->wd_queue[i].ctx, pool->wd_queue[i].ctx->used);
 
 		memcpy(&wd, &pool->wd_queue[i], sizeof(struct msk_worker_data));
 
 		if (eventfd_write(pool->m_efd, 1))
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
 
 		msk_worker_callback(wd.trans, wd.ctx, wd.status, wd.opcode);
 	}
@@ -493,77 +492,77 @@ static int msk_spawn_worker_threads() {
 	int i, ret;
 	/* alloc and stuff */
 
-	pthread_mutex_lock(&internals->lock);
+	pthread_mutex_lock(&msk_global_state->lock);
 	do {
-		if (internals->worker_pool.thrids != NULL || internals->worker_pool.worker_count == -1) {
+		if (msk_global_state->worker_pool.thrids != NULL || msk_global_state->worker_pool.worker_count == -1) {
 			break;
 		}
 
-		internals->worker_pool.thrids = malloc(internals->worker_pool.worker_count*sizeof(pthread_t));
-		if (internals->worker_pool.thrids == NULL) {
+		msk_global_state->worker_pool.thrids = malloc(msk_global_state->worker_pool.worker_count*sizeof(pthread_t));
+		if (msk_global_state->worker_pool.thrids == NULL) {
 			ret = ENOMEM;
 			break;
 		}
-		internals->worker_pool.wd_queue = malloc(internals->worker_pool.size*sizeof(struct msk_worker_data));
-		if (internals->worker_pool.wd_queue == NULL) {
+		msk_global_state->worker_pool.wd_queue = malloc(msk_global_state->worker_pool.size*sizeof(struct msk_worker_data));
+		if (msk_global_state->worker_pool.wd_queue == NULL) {
 			ret = ENOMEM;
 			break;
 		}
 
-		internals->worker_pool.w_head = 0;
-		internals->worker_pool.w_count = 0;
-		internals->worker_pool.m_tail = 0;
-		internals->worker_pool.m_count = 0;
-		internals->worker_pool.w_efd = eventfd(0, 0);
-		internals->worker_pool.m_efd = eventfd(0, 0);
+		msk_global_state->worker_pool.w_head = 0;
+		msk_global_state->worker_pool.w_count = 0;
+		msk_global_state->worker_pool.m_tail = 0;
+		msk_global_state->worker_pool.m_count = 0;
+		msk_global_state->worker_pool.w_efd = eventfd(0, 0);
+		msk_global_state->worker_pool.m_efd = eventfd(0, 0);
 
-		for (i=0; i < internals->worker_pool.worker_count; i++) {
-			ret = msk_create_thread(&internals->worker_pool.thrids[i], msk_worker_thread, &internals->worker_pool);
+		for (i=0; i < msk_global_state->worker_pool.worker_count; i++) {
+			ret = msk_create_thread(&msk_global_state->worker_pool.thrids[i], msk_worker_thread, &msk_global_state->worker_pool);
 			if (ret)
 				break;
 		}
 	} while (0);
 	if (ret) {
 		// join stuff?
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Could not create workers: %s (%d)", strerror(ret), ret);
-		if (internals->worker_pool.wd_queue) {
-			free(internals->worker_pool.wd_queue);
-			internals->worker_pool.wd_queue = NULL;
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Could not create workers: %s (%d)", strerror(ret), ret);
+		if (msk_global_state->worker_pool.wd_queue) {
+			free(msk_global_state->worker_pool.wd_queue);
+			msk_global_state->worker_pool.wd_queue = NULL;
 		}
-		if (internals->worker_pool.thrids) {
-			free(internals->worker_pool.thrids);
-			internals->worker_pool.thrids = NULL;
+		if (msk_global_state->worker_pool.thrids) {
+			free(msk_global_state->worker_pool.thrids);
+			msk_global_state->worker_pool.thrids = NULL;
 		}
 	}
-	pthread_mutex_unlock(&internals->lock);
+	pthread_mutex_unlock(&msk_global_state->lock);
 	return ret;
 }
 
-/** msk_kill_worker_threads: stops and joins worker threads, assume that we hold internals->lock and internals->run_thread == 0;
+/** msk_kill_worker_threads: stops and joins worker threads, assume that we hold msk_global_state->lock and msk_global_state->run_thread == 0;
  */
 static int msk_kill_worker_threads() {
 	int i;
 
-	if (internals->worker_pool.thrids == NULL || internals->worker_pool.worker_count == -1) {
+	if (msk_global_state->worker_pool.thrids == NULL || msk_global_state->worker_pool.worker_count == -1) {
 		return 0;
 	}
 
 	/* wake up all threads - this value guarantees that we wait till a thread woke up before sending it again... */
 	/* FIXME make sure none is awake before sending that :) */
-	for (i=0; i < internals->worker_pool.worker_count; i++)
-		eventfd_write(internals->worker_pool.w_efd, 0xfffffffffffffffe);
+	for (i=0; i < msk_global_state->worker_pool.worker_count; i++)
+		eventfd_write(msk_global_state->worker_pool.w_efd, 0xfffffffffffffffe);
 
-	for (i=0; i < internals->worker_pool.worker_count; i++) {
-		pthread_join(internals->worker_pool.thrids[i], NULL);
+	for (i=0; i < msk_global_state->worker_pool.worker_count; i++) {
+		pthread_join(msk_global_state->worker_pool.thrids[i], NULL);
 	}
 
-	close(internals->worker_pool.w_efd);
-	close(internals->worker_pool.m_efd);
+	close(msk_global_state->worker_pool.w_efd);
+	close(msk_global_state->worker_pool.m_efd);
 
-	free(internals->worker_pool.thrids);
-	internals->worker_pool.thrids = NULL;
-	free(internals->worker_pool.wd_queue);
-	internals->worker_pool.wd_queue = NULL;
+	free(msk_global_state->worker_pool.thrids);
+	msk_global_state->worker_pool.thrids = NULL;
+	free(msk_global_state->worker_pool.wd_queue);
+	msk_global_state->worker_pool.wd_queue = NULL;
 
 
 	return 0;
@@ -577,7 +576,7 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	INFO_LOG(trans->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
 
 	// Don't signal and do it directly if no worker
-	if (internals->worker_pool.worker_count == -1) {
+	if (msk_global_state->worker_pool.worker_count == -1) {
 		if (flag & MSK_HAS_TRANS_CTX_LOCK)
 			pthread_mutex_unlock(&trans->ctx_lock);
 		msk_worker_callback(trans, ctx, status, opcode);
@@ -591,18 +590,18 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	if (flag & MSK_HAS_TRANS_CM_LOCK)
 		ctx->used = MSK_CTX_PROCESSING;
 
-	while (atomic_inc(internals->worker_pool.m_count) > internals->worker_pool.size
-	    && internals->run_threads > 0) {
+	while (atomic_inc(msk_global_state->worker_pool.m_count) > msk_global_state->worker_pool.size
+	    && msk_global_state->run_threads > 0) {
 		uint64_t n;
 		if (flag & MSK_HAS_TRANS_CM_LOCK)
 			pthread_mutex_unlock(&trans->cm_lock);
 		if (flag & MSK_HAS_TRANS_CTX_LOCK)
 			pthread_mutex_unlock(&trans->ctx_lock);
-		if (eventfd_read(internals->worker_pool.m_efd, &n) || n > INT_MAX) {
+		if (eventfd_read(msk_global_state->worker_pool.m_efd, &n) || n > INT_MAX) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
 		} else {
 			printf("master: %d\n", (int)n);
-			atomic_sub(internals->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
+			atomic_sub(msk_global_state->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
 		}
 		if (flag & MSK_HAS_TRANS_CTX_LOCK)
 			pthread_mutex_lock(&trans->ctx_lock);
@@ -611,24 +610,24 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	}
 
 	do {
-		if (internals->run_threads == 0) {
+		if (msk_global_state->run_threads == 0) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Had something to do but threads stopping?");
 			break;
 		}
 
-		i = atomic_postinc(internals->worker_pool.m_tail);
-		if (i >= internals->worker_pool.size) {
-			i = i & (internals->worker_pool.size-1);
-			atomic_mask(internals->worker_pool.w_head, internals->worker_pool.size-1);
+		i = atomic_postinc(msk_global_state->worker_pool.m_tail);
+		if (i >= msk_global_state->worker_pool.size) {
+			i = i & (msk_global_state->worker_pool.size-1);
+			atomic_mask(msk_global_state->worker_pool.w_head, msk_global_state->worker_pool.size-1);
 		}
 
-		wd = &internals->worker_pool.wd_queue[i];
+		wd = &msk_global_state->worker_pool.wd_queue[i];
 		wd->trans = trans;
 		wd->ctx = ctx;
 		wd->status = status;
 		wd->opcode = opcode;
 
-		if (eventfd_write(internals->worker_pool.w_efd, 1))
+		if (eventfd_write(msk_global_state->worker_pool.w_efd, 1))
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
 
 	} while (0);
@@ -673,7 +672,7 @@ static int msk_delfd(int fd, int epollfd) {
 	ret = epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL);
 	if (ret == -1) {
 		ret = errno;
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Failed to del fd to epoll: %s (%d)", strerror(ret), ret);
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Failed to del fd to epoll: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
 
@@ -681,19 +680,19 @@ static int msk_delfd(int fd, int epollfd) {
 }
 
 static inline int msk_cq_addfd(struct msk_trans *trans) {
-	return msk_addfd(trans, trans->comp_channel->fd, internals->cq_epollfd);
+	return msk_addfd(trans, trans->comp_channel->fd, msk_global_state->cq_epollfd);
 }
 
 static inline int msk_cq_delfd(struct msk_trans *trans) {
-	return msk_delfd(trans->comp_channel->fd, internals->cq_epollfd);
+	return msk_delfd(trans->comp_channel->fd, msk_global_state->cq_epollfd);
 }
 
 static inline int msk_cm_addfd(struct msk_trans *trans) {
-	return msk_addfd(trans, trans->event_channel->fd, internals->cm_epollfd);
+	return msk_addfd(trans, trans->event_channel->fd, msk_global_state->cm_epollfd);
 }
 
 static inline int msk_cm_delfd(struct msk_trans *trans) {
-	return msk_delfd(trans->event_channel->fd, internals->cm_epollfd);
+	return msk_delfd(trans->event_channel->fd, msk_global_state->cm_epollfd);
 }
 
 static inline int msk_stats_add(struct msk_trans *trans) {
@@ -730,7 +729,7 @@ static inline int msk_stats_add(struct msk_trans *trans) {
 	}
 
 
-	return msk_addfd(trans, trans->stats_sock, internals->stats_epollfd);
+	return msk_addfd(trans, trans->stats_sock, msk_global_state->stats_epollfd);
 }
 
 static inline int msk_stats_del(struct msk_trans *trans) {
@@ -754,14 +753,14 @@ void *msk_stats_thread(void *arg) {
 	int nfds, n, childfd;
 	int ret;
 
-	while (internals->run_threads > 0) {
-		nfds = epoll_wait(internals->stats_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
+	while (msk_global_state->run_threads > 0) {
+		nfds = epoll_wait(msk_global_state->stats_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
 		if (nfds == 0 || (nfds == -1 && errno == EINTR))
 			continue;
 
 		if (nfds == -1) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll_pwait failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "epoll_pwait failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
@@ -774,7 +773,7 @@ void *msk_stats_thread(void *arg) {
 			}
 
 			if (epoll_events[n].events == EPOLLERR || epoll_events[n].events == EPOLLHUP) {
-				msk_delfd(trans->stats_sock, internals->stats_epollfd);
+				msk_delfd(trans->stats_sock, msk_global_state->stats_epollfd);
 				continue;
 			}
 			if ( (childfd = accept(trans->stats_sock, NULL, NULL)) == -1) {
@@ -845,8 +844,8 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	case RDMA_CM_EVENT_ESTABLISHED:
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ESTABLISHED");
 		pthread_mutex_lock(&trans->cm_lock);
-		if ((ret = msk_check_create_epoll_thread(&internals->cq_thread, msk_cq_thread, trans, &internals->cq_epollfd))
-		|| (ret = msk_check_create_epoll_thread(&internals->stats_thread, msk_stats_thread, trans, &internals->stats_epollfd))) {
+		if ((ret = msk_check_create_epoll_thread(&msk_global_state->cq_thread, msk_cq_thread, trans, &msk_global_state->cq_epollfd))
+		|| (ret = msk_check_create_epoll_thread(&msk_global_state->stats_thread, msk_stats_thread, trans, &msk_global_state->stats_epollfd))) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 			trans->state = MSK_ERROR;
 		} else {
@@ -937,15 +936,15 @@ static void *msk_cm_thread(void *arg) {
 	int nfds, n;
 	int ret;
 
-	while (internals->run_threads > 0) {
-		nfds = epoll_wait(internals->cm_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
+	while (msk_global_state->run_threads > 0) {
+		nfds = epoll_wait(msk_global_state->cm_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
 
 		if (nfds == 0 || (nfds == -1 && errno == EINTR))
 			continue;
 
 		if (nfds == -1) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll_wait failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "epoll_wait failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
@@ -1005,7 +1004,8 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 	void *ev_ctx;
 	struct msk_ctx *ctx;
 	msk_data_t *data;
-	int ret, npoll, i;
+	int ret, i;
+	int npoll = 0;
 	uint32_t len;
 
 	ret = ibv_get_cq_event(trans->comp_channel, &ev_cq, &ev_ctx);
@@ -1016,7 +1016,7 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 		return ret;
 	}
 	if (ev_cq != trans->cq) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Unknown cq,");
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Unknown cq %p", ev_cq);
 		ibv_ack_cq_events(ev_cq, 1);
 		return EINVAL;
 	}
@@ -1056,14 +1056,6 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 
 				ctx = (struct msk_ctx *)wc[i].wr_id;
 
-/*				@todo: check if this is different from wc[i].byte_len?
-
-				for (i = 0, data = ctx->data;
-				     i < ctx->wr.wwr.num_sge, data != NULL;
-				     i++, data = data->next) {
-					trans->stats.tx_bytes += data->size;
-				}
-*/
 				if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
 					//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
@@ -1111,6 +1103,11 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 		}
 	}
 
+	if (npoll < 0) {
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_poll_cq failed: %d (%s)", -npoll, strerror(-npoll));
+		ret = -npoll;
+	}
+
 	ibv_ack_cq_events(trans->cq, 1);
 
 	return -ret;
@@ -1127,14 +1124,14 @@ static void *msk_cq_thread(void *arg) {
 	int nfds, n;
 	int ret;
 
-	while (internals->run_threads > 0) {
-		nfds = epoll_wait(internals->cq_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
+	while (msk_global_state->run_threads > 0) {
+		nfds = epoll_wait(msk_global_state->cq_epollfd, epoll_events, EPOLL_MAX_EVENTS, 100);
 		if (nfds == 0 || (nfds == -1 && errno == EINTR))
 			continue;
 
 		if (nfds == -1) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "epoll_pwait failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "epoll_pwait failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
@@ -1355,24 +1352,24 @@ void msk_destroy_trans(struct msk_trans **ptrans) {
 		msk_destroy_qp(trans);
 		msk_destroy_buffer(trans);
 
-		pthread_mutex_lock(&internals->lock);
-		internals->run_threads--;
-		if (internals->run_threads == 0) {
-			if (internals->cm_thread) {
-				pthread_join(internals->cm_thread, NULL);
-				internals->cm_thread = 0;
+		pthread_mutex_lock(&msk_global_state->lock);
+		msk_global_state->run_threads--;
+		if (msk_global_state->run_threads == 0) {
+			if (msk_global_state->cm_thread) {
+				pthread_join(msk_global_state->cm_thread, NULL);
+				msk_global_state->cm_thread = 0;
 			}
-			if (internals->cq_thread) {
-				pthread_join(internals->cq_thread, NULL);
-				internals->cq_thread = 0;
+			if (msk_global_state->cq_thread) {
+				pthread_join(msk_global_state->cq_thread, NULL);
+				msk_global_state->cq_thread = 0;
 			}
-			if (internals->stats_thread) {
-				pthread_join(internals->stats_thread, NULL);
-				internals->stats_thread = 0;
+			if (msk_global_state->stats_thread) {
+				pthread_join(msk_global_state->stats_thread, NULL);
+				msk_global_state->stats_thread = 0;
 			}
 			msk_kill_worker_threads();
 		}
-		pthread_mutex_unlock(&internals->lock);
+		pthread_mutex_unlock(&msk_global_state->lock);
 
 
 		//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
@@ -1400,13 +1397,13 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 	struct msk_trans *trans;
 
 	if (!ptrans || !attr) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Invalid argument");
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Invalid argument");
 		return EINVAL;
 	}
 
 	trans = malloc(sizeof(struct msk_trans));
 	if (!trans) {
-		INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "Out of memory");
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Out of memory");
 		return ENOMEM;
 	}
 
@@ -1416,7 +1413,7 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 		trans->event_channel = rdma_create_event_channel();
 		if (!trans->event_channel) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "create_event_channel failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "create_event_channel failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
@@ -1425,14 +1422,14 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 		ret = rdma_create_id(trans->event_channel, &trans->cm_id, trans, trans->conn_type);
 		if (ret) {
 			ret = errno;
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "create_id failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "create_id failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
 		trans->state = MSK_INIT;
 
 		if (!attr->node || !attr->port) {
-			INFO_LOG(internals->debug & MSK_DEBUG_EVENT, "node and port have to be defined");
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "node and port have to be defined");
 			ret = EDESTADDRREQ;
 			break;
 		}
@@ -1504,19 +1501,19 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 			break;
 		}
 
-		pthread_mutex_lock(&internals->lock);
-		internals->debug = trans->debug;
-		if (internals->run_threads == 0) {
-			internals->worker_pool.worker_count = attr->worker_count ? attr->worker_count : -1;
+		pthread_mutex_lock(&msk_global_state->lock);
+		msk_global_state->debug = trans->debug;
+		if (msk_global_state->run_threads == 0) {
+			msk_global_state->worker_pool.worker_count = attr->worker_count ? attr->worker_count : -1;
 
 			/* round up worker_pool.size to the next bigger power of two */
 			attr->worker_queue_size = attr->worker_queue_size ? attr->worker_queue_size : 64;
-			internals->worker_pool.size = 2;
-			while (internals->worker_pool.size < attr->worker_queue_size)
-				internals->worker_pool.size *= 2;
+			msk_global_state->worker_pool.size = 2;
+			while (msk_global_state->worker_pool.size < attr->worker_queue_size)
+				msk_global_state->worker_pool.size *= 2;
 		}
-		internals->run_threads++;
-		pthread_mutex_unlock(&internals->lock);
+		msk_global_state->run_threads++;
+		pthread_mutex_unlock(&msk_global_state->lock);
 		ret = msk_spawn_worker_threads();
 
 		if (ret) {
@@ -1690,7 +1687,7 @@ int msk_bind_server(struct msk_trans *trans) {
 
 	trans->state = MSK_LISTENING;
 
-	if ((ret = msk_check_create_epoll_thread(&internals->cm_thread, msk_cm_thread, trans, &internals->cm_epollfd))) {
+	if ((ret = msk_check_create_epoll_thread(&msk_global_state->cm_thread, msk_cm_thread, trans, &msk_global_state->cm_epollfd))) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
@@ -1762,9 +1759,9 @@ static struct msk_trans *clone_trans(struct msk_trans *listening_trans, struct r
 		return NULL;
 	}
 
-	pthread_mutex_lock(&internals->lock);
-	internals->run_threads++;
-	pthread_mutex_unlock(&internals->lock);
+	pthread_mutex_lock(&msk_global_state->lock);
+	msk_global_state->run_threads++;
+	pthread_mutex_unlock(&msk_global_state->lock);
 
 	return trans;
 }
@@ -2043,7 +2040,7 @@ int msk_connect(struct msk_trans *trans) {
 		return EINVAL;
 	}
 
-	if ((ret = msk_check_create_epoll_thread(&internals->cm_thread, msk_cm_thread, trans, &internals->cm_epollfd))) {
+	if ((ret = msk_check_create_epoll_thread(&msk_global_state->cm_thread, msk_cm_thread, trans, &msk_global_state->cm_epollfd))) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
 		return ret;
 	}
@@ -2187,9 +2184,7 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 		return EINVAL;
 	}
 
-
 	pthread_mutex_lock(&trans->ctx_lock);
-
 	do {
 		for (i = 0, wctx = (struct msk_ctx *)trans->send_buf;
 		     i < trans->qp_attr.cap.max_send_wr;
@@ -2205,7 +2200,6 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 	} while ( i == trans->qp_attr.cap.max_send_wr );
 	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "got a free context");
 	wctx->used = MSK_CTX_PENDING;
-
 	pthread_mutex_unlock(&trans->ctx_lock);
 
 	wctx->callback = callback;
