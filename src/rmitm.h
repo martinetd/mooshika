@@ -71,8 +71,11 @@ struct pkt_hdr {
 
 #define PACKET_HDR_LEN sizeof(struct pkt_hdr)
 
-#define	CHECKSUM_CARRY(x) \
-    (~((x & 0xffff) + (x >> 16)) & 0xffff)
+#define	CHECKSUM_CARRY(x) do {          \
+	x = ((x & 0xffff) + (x >> 16)); \
+	if (x > 0xffff)                 \
+		x -= 0xffff;            \
+} while (0)
 
 static inline uint16_t checksum(u_int16_t *data, int len) {
 	uint32_t sum = 0;
@@ -85,7 +88,7 @@ static inline uint16_t checksum(u_int16_t *data, int len) {
 		sum += *data++;
 		len -= 2;
 		if (sum >= 0x10000)
-			sum = (sum & 0xffff) + (sum >> 16);
+			sum -= 0xffff;
 	}
 
 	if (len == 1) {
@@ -94,6 +97,7 @@ static inline uint16_t checksum(u_int16_t *data, int len) {
 		sum += pad.s;
 	}
 
+	CHECKSUM_CARRY(sum);
 	return sum;
 }
 
@@ -106,7 +110,9 @@ static inline void ipv6_tcp_checksum(struct pkt_hdr *hdr) {
 	sum  = checksum((uint16_t*)&hdr->ipv6.ip_src, 2*sizeof(struct in6_addr));
 	sum += htons(IPPROTO_TCP + tcp_len(hdr));
 	sum += checksum((uint16_t*)&hdr->tcp, tcp_len(hdr));
-	hdr->tcp.th_sum = CHECKSUM_CARRY(sum);
+
+	CHECKSUM_CARRY(sum);
+	hdr->tcp.th_sum = ((~sum) & 0xffff);
 }
 
 static inline int min(int a, int b) {
