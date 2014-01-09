@@ -225,9 +225,9 @@ static void* flush_thread(void *arg) {
 	snprintf(backpath, pos, "%s.1", thread_arg->pcap_filename);
 	pcap_dumper_t **p_pcap_dumper = thread_arg->p_pcap_dumper;
 	/* keep this value for close or race between check in while and dump_flush */
-	pcap_dumper_t *pcap_dumper;
+	pcap_dumper_t *pcap_dumper = *p_pcap_dumper;
 
-	while ((pcap_dumper = *p_pcap_dumper)) {
+	while (*p_pcap_dumper) {
 		pcap_dump_flush(pcap_dumper);
 		if (thread_arg->file_rotate) {
 			pos = pcap_dump_ftell(pcap_dumper);
@@ -237,7 +237,8 @@ static void* flush_thread(void *arg) {
 				pcap_dump_flush(pcap_dumper);
 				pcap_dump_close(pcap_dumper);
 				rename(thread_arg->pcap_filename, backpath);
-				TEST_NZ(*p_pcap_dumper = pcap_dump_open(thread_arg->pcap, thread_arg->pcap_filename));
+				TEST_NZ(pcap_dumper = pcap_dump_open(thread_arg->pcap, thread_arg->pcap_filename));
+				*p_pcap_dumper = pcap_dumper;
 				pthread_mutex_unlock(thread_arg->plock);
 			}
 		}
