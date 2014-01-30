@@ -791,13 +791,13 @@ void *msk_stats_thread(void *arg) {
 				"	rx_bytes\trx_pkt\n"
 				"	%10"PRIu64"\t%"PRIu64"\n"
 				"	error: %"PRIu64"\n"
-				"	callback time:   %lu.%06lu s\n"
-				"	completion time: %lu.%06lu s\n",
+				"	callback time:   %lu.%09lu s\n"
+				"	completion time: %lu.%09lu s\n",
 				trans->stats.tx_bytes, trans->stats.tx_pkt,
 				trans->stats.rx_bytes, trans->stats.rx_pkt,
 				trans->stats.err,
-				trans->stats.nsec_callback / 1000000, trans->stats.nsec_callback % 1000000,
-				trans->stats.nsec_compevent / 1000000, trans->stats.nsec_compevent % 1000000);
+				trans->stats.nsec_callback / NSEC_IN_SEC, trans->stats.nsec_callback % NSEC_IN_SEC,
+				trans->stats.nsec_compevent / NSEC_IN_SEC, trans->stats.nsec_compevent % NSEC_IN_SEC);
 			ret = write(childfd, stats_str, ret);
 			ret = close(childfd);
 		}
@@ -1892,9 +1892,9 @@ struct msk_trans *msk_accept_one_wait(struct msk_trans *trans, int msleep) {
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	ts.tv_sec += msleep / 1000;
-	ts.tv_nsec += (msleep % 1000) * 1000000;
-	if (ts.tv_nsec >= 1000000000) {
-		ts.tv_nsec -= 1000000000;
+	ts.tv_nsec += (msleep % 1000) * NSEC_IN_SEC;
+	if (ts.tv_nsec >= NSEC_IN_SEC) {
+		ts.tv_nsec -= NSEC_IN_SEC;
 		ts.tv_sec++;
 	}
 
