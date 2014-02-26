@@ -60,9 +60,10 @@ typedef union sockaddr_union {
 struct msk_stats {
 	uint64_t rx_bytes;
 	uint64_t rx_pkt;
+	uint64_t rx_err;
 	uint64_t tx_bytes;
 	uint64_t tx_pkt;
-	uint64_t err;
+	uint64_t tx_err;
 	/* times only set if debug has MSK_DEBUG_SPEED */
 	uint64_t nsec_callback;
 	uint64_t nsec_compevent;

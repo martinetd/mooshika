@@ -222,16 +222,15 @@ void* handle_trans(void *arg) {
 
 	if (thread_arg->stats)
 		printf("stats:\n"
-			"	tx_bytes\ttx_pkt\n"
-			"	%10"PRIu64"\t%"PRIu64"\n"
-			"	rx_bytes\trx_pkt\n"
-			"	%10"PRIu64"\t%"PRIu64"\n"
-			"	error: %"PRIu64"\n"
+			"	tx_bytes\ttx_pkt\ttx_err\n"
+			"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
+			"	rx_bytes\trx_pkt\trx_err\n"
+			"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
 			"	callback time:   %lu.%09lu s\n"
 			"	completion time: %lu.%09lu s\n",
 			trans->stats.tx_bytes, trans->stats.tx_pkt,
-			trans->stats.rx_bytes, trans->stats.rx_pkt,
-			trans->stats.err,
+			trans->stats.tx_err, trans->stats.rx_bytes,
+			trans->stats.rx_pkt, trans->stats.rx_err,
 			trans->stats.nsec_callback / NSEC_IN_SEC, trans->stats.nsec_callback % NSEC_IN_SEC,
 			trans->stats.nsec_compevent / NSEC_IN_SEC, trans->stats.nsec_compevent % NSEC_IN_SEC);
 

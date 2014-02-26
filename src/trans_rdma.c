@@ -786,16 +786,15 @@ void *msk_stats_thread(void *arg) {
 			}
 
 			ret = snprintf(stats_str, sizeof(stats_str), "stats:\n"
-				"	tx_bytes\ttx_pkt\n"
-				"	%10"PRIu64"\t%"PRIu64"\n"
-				"	rx_bytes\trx_pkt\n"
-				"	%10"PRIu64"\t%"PRIu64"\n"
-				"	error: %"PRIu64"\n"
+				"	tx_bytes\ttx_pkt\ttx_err\n"
+				"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
+				"	rx_bytes\trx_pkt\trx_err\n"
+				"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
 				"	callback time:   %lu.%09lu s\n"
 				"	completion time: %lu.%09lu s\n",
 				trans->stats.tx_bytes, trans->stats.tx_pkt,
-				trans->stats.rx_bytes, trans->stats.rx_pkt,
-				trans->stats.err,
+				trans->stats.tx_err, trans->stats.rx_bytes,
+				trans->stats.rx_pkt, trans->stats.rx_err,
 				trans->stats.nsec_callback / NSEC_IN_SEC, trans->stats.nsec_callback % NSEC_IN_SEC,
 				trans->stats.nsec_compevent / NSEC_IN_SEC, trans->stats.nsec_compevent % NSEC_IN_SEC);
 			ret = write(childfd, stats_str, ret);
@@ -1035,7 +1034,19 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Something was bad on that send");
 			}
 			if (wc[i].status) {
-				trans->stats.err++;
+				switch (wc[i].opcode) {
+					case IBV_WC_SEND:
+					case IBV_WC_RDMA_WRITE:
+					case IBV_WC_RDMA_READ:
+						trans->stats.tx_err++;
+						break;
+					case IBV_WC_RECV:
+					case IBV_WC_RECV_RDMA_WITH_IMM:
+						trans->stats.rx_err++;
+						break;
+					default:
+						break;
+				}
 				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, -1, flag);
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
