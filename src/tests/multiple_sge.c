@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
 				print_help(argv);
 				exit(0);
 			case 'v':
-				ERROR_LOG("verbose switch not ready just yet, come back later!\n");
+				attr.debug = attr.debug * 2 + 1;
 				break;
 			case 'c':
 				attr.server = 0;
@@ -236,8 +236,6 @@ int main(int argc, char **argv) {
 	pthread_mutex_unlock(&lock);
 
 	msk_destroy_trans(&trans);
-
-	sleep(1);
 
 	return 0;
 }
