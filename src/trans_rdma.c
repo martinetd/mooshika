@@ -90,11 +90,6 @@ struct msk_ctx {
 	struct ibv_sge sg_list[0]; 		/**< this is actually an array. note that when you malloc you have to add its size */
 };
 
-enum msk_lock_flag {
-	MSK_HAS_NO_LOCK = 0,
-	MSK_HAS_TRANS_CM_LOCK = 1
-};
-
 struct msk_worker_data {
 	struct msk_trans *trans;
 	struct msk_ctx *ctx;
@@ -413,7 +408,7 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 }
 
 
-static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
+static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
 	struct timespec ts_start, ts_end;
 
 	if (status) {
@@ -506,7 +501,7 @@ static void* msk_worker_thread(void *arg) {
 		if (eventfd_write(pool->m_efd, 1))
 			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
 
-		msk_worker_callback(wd.trans, wd.ctx, wd.status, wd.opcode, MSK_HAS_NO_LOCK);
+		msk_worker_callback(wd.trans, wd.ctx, wd.status, wd.opcode);
 	}
 
 	pthread_exit(NULL);
@@ -592,30 +587,34 @@ static int msk_kill_worker_threads() {
 	return 0;
 }
 
-
-static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
+/* called under trans cm lock */
+static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
 	struct msk_worker_data *wd;
 	int i;
-
-	if (!atomic_bool_compare_and_swap(&ctx->used, MSK_CTX_PENDING, MSK_CTX_PROCESSING)) {
-		// nothing to do
-		return 0;
-	}
 
 	INFO_LOG(trans->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p", trans, ctx);
 
 	// Don't signal and do it directly if no worker
 	if (msk_global_state->worker_pool.worker_count == -1) {
-		msk_worker_callback(trans, ctx, status, opcode, flag);
+		msk_worker_callback(trans, ctx, status, opcode);
 		return 0;
 	}
 
+	/*
+	 * Only need this done in async mode because we don't leave trans cm lock otherwise.
+	 * Likewise, doesn't need an atomic_bool_compare_and_swap because it only matters where this lock is held
+	 * e.g. if (!atomic_bool_compare_and_swap(&ctx->used, MSK_CTX_PENDING, MSK_CTX_PROCESSING))
+	 */
+	if (ctx->used != MSK_CTX_PENDING) {
+		// nothing to do
+		return 0;
+	}
+	ctx->used = MSK_CTX_PROCESSING;
 
 	while (atomic_inc(msk_global_state->worker_pool.m_count) > msk_global_state->worker_pool.size
 	    && msk_global_state->run_threads > 0) {
 		uint64_t n;
-		if (flag & MSK_HAS_TRANS_CM_LOCK)
-			msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 		if (eventfd_read(msk_global_state->worker_pool.m_efd, &n) || n > INT_MAX) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
@@ -623,8 +622,7 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 			printf("master: %d\n", (int)n);
 			atomic_sub(msk_global_state->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
 		}
-		if (flag & MSK_HAS_TRANS_CM_LOCK)
-			msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 	}
 
 	do {
@@ -1017,7 +1015,7 @@ static void *msk_cm_thread(void *arg) {
  *
  * @return 0 on success, work completion status if not 0
  */
-static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag) {
+static int msk_cq_event_handler(struct msk_trans *trans) {
 	struct ibv_wc wc[NUM_WQ_PER_POLL];
 	struct ibv_cq *ev_cq;
 	void *ev_ctx;
@@ -1067,7 +1065,7 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 					default:
 						break;
 				}
-				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, wc[i].opcode, flag);
+				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, wc[i].opcode);
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
@@ -1092,7 +1090,7 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
 				}
 
-				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
+				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode);
 				break;
 
 			case IBV_WC_RECV:
@@ -1124,7 +1122,7 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "received more than could fit? %d leftover bytes", len);
 				}
 
-				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode, flag);
+				msk_signal_worker(trans, ctx, wc[i].status, wc[i].opcode);
 				break;
 
 			default:
@@ -1188,7 +1186,7 @@ static void *msk_cq_thread(void *arg) {
 				continue;
 			}
 
-			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_CM_LOCK);
+			ret = msk_cq_event_handler(trans);
 			if (ret) {
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "something went wrong with our cq_event_handler");
@@ -1225,7 +1223,7 @@ static void msk_flush_buffers(struct msk_trans *trans) {
 
 	if (trans->state != MSK_ERROR) {
 		do {
-			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_CM_LOCK);
+			ret = msk_cq_event_handler(trans);
 		} while (ret == 0);
 
 		if (ret != EAGAIN)
@@ -1238,13 +1236,13 @@ static void msk_flush_buffers(struct msk_trans *trans) {
 		 i < trans->rq_depth;
 		 i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->max_recv_sge*sizeof(struct ibv_sge)))
 			if (ctx->used == MSK_CTX_PENDING)
-				msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV, MSK_HAS_TRANS_CM_LOCK);
+				msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV);
 
 	for (i = 0, ctx = (struct msk_ctx *)trans->wctx;
 	     i < trans->sq_depth;
 	     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->max_send_sge*sizeof(struct ibv_sge)))
 		if (ctx->used == MSK_CTX_PENDING)
-			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND, MSK_HAS_TRANS_CM_LOCK);
+			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND);
 
 	/* only flush rx if client or accepting server */
 	if (trans->server >= 0) do {
