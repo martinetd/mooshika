@@ -69,8 +69,6 @@
 #  define VALGRIND_MAKE_MEM_DEFINED(addr, len)
 #endif
 
-
-
 /**
  * \struct msk_ctx
  * Context data we can use during recv/send callbacks
@@ -94,11 +92,8 @@ struct msk_ctx {
 
 enum msk_lock_flag {
 	MSK_HAS_NO_LOCK = 0,
-	MSK_HAS_TRANS_CM_LOCK = 1,
-	MSK_HAS_TRANS_CTX_LOCK = 1 << 2
+	MSK_HAS_TRANS_CM_LOCK = 1
 };
-
-#define MSK_HAS_TRANS_LOCKS (MSK_HAS_TRANS_CM_LOCK | MSK_HAS_TRANS_CTX_LOCK)
 
 struct msk_worker_data {
 	struct msk_trans *trans;
@@ -180,6 +175,36 @@ static void *msk_cq_thread(void *arg);
 
 /* UTILITY FUNCTIONS */
 
+
+static inline int msk_mutex_lock(int debug, pthread_mutex_t *mutex) {
+	INFO_LOG(debug, "locking   %p", mutex);
+	return pthread_mutex_lock(mutex);
+}
+static inline int msk_mutex_unlock(int debug, pthread_mutex_t *mutex) {
+	INFO_LOG(debug, "unlocking %p", mutex);
+	return pthread_mutex_unlock(mutex);
+}
+static inline int msk_cond_wait(int debug,
+				pthread_cond_t *cond,
+				pthread_mutex_t *mutex) {
+	int rc;
+	INFO_LOG(debug, "unlocking %p", mutex);
+	rc = pthread_cond_wait(cond, mutex);
+	INFO_LOG(debug, "locked    %p", mutex);
+	return rc;
+}
+static inline int msk_cond_timedwait(int debug,
+				     pthread_cond_t *cond,
+				     pthread_mutex_t *mutex,
+				     const struct timespec *abstime) {
+	int rc;
+	INFO_LOG(debug, "unlocking %p", mutex);
+	rc = pthread_cond_timedwait(cond, mutex, abstime);
+	INFO_LOG(debug, "locked    %p", mutex);
+	return rc;
+}
+
+
 /**
  * msk_getpd: helper function to get the right pd for a given trans
  *
@@ -203,8 +228,9 @@ struct msk_pd *msk_getpd(struct msk_trans *trans) {
 			/* Not found, but we have room. */
 			if (atomic_postinc(trans->pd[i].used) != 0
 			    || trans->pd[i].context != NULL) {
-				/* We got raced, keep going */
+				/* We got raced, try again */
 				atomic_dec(trans->pd[i].used);
+				continue;
 			} else {
 				trans->pd[i].context = trans->cm_id->verbs;
 				return &trans->pd[i];
@@ -325,6 +351,11 @@ void msk_print_devinfo(struct msk_trans *trans) {
 		(unsigned) (node_guid >>  0) & 0xffff);
 }
 
+
+static inline struct msk_ctx *msk_next_ctx(struct msk_ctx *ctx, int n_sge) {
+	return (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + n_sge*sizeof(struct ibv_sge));
+}
+
 /**
  * msk_create_thread: Simple wrapper around pthread_create
  */
@@ -381,8 +412,10 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 	return 0;
 }
 
-static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
+
+static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode, enum msk_lock_flag flag) {
 	struct timespec ts_start, ts_end;
+
 	if (status) {
 		if (ctx && ctx->err_callback) {
 			if (trans->debug & MSK_DEBUG_SPEED)
@@ -393,10 +426,7 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 				sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 			}
 		}
-		pthread_mutex_lock(&trans->ctx_lock);
 		ctx->used = MSK_CTX_FREE;
-		pthread_cond_broadcast(&trans->ctx_cond);
-		pthread_mutex_unlock(&trans->ctx_lock);
 		return;
 	}
 
@@ -414,10 +444,7 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 				}
 			}
 
-			pthread_mutex_lock(&trans->ctx_lock);
 			ctx->used = MSK_CTX_FREE;
-			pthread_cond_broadcast(&trans->ctx_cond);
-			pthread_mutex_unlock(&trans->ctx_lock);
 			break;
 
 		case IBV_WC_RECV:
@@ -432,10 +459,7 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 				}
 			}
 
-			pthread_mutex_lock(&trans->ctx_lock);
 			ctx->used = MSK_CTX_FREE;
-			pthread_cond_broadcast(&trans->ctx_cond);
-			pthread_mutex_unlock(&trans->ctx_lock);
 			break;
 
 		default:
@@ -482,14 +506,14 @@ static void* msk_worker_thread(void *arg) {
 		if (eventfd_write(pool->m_efd, 1))
 			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "eventfd_write failed");
 
-		msk_worker_callback(wd.trans, wd.ctx, wd.status, wd.opcode);
+		msk_worker_callback(wd.trans, wd.ctx, wd.status, wd.opcode, MSK_HAS_NO_LOCK);
 	}
 
 	pthread_exit(NULL);
 }
 
 static int msk_spawn_worker_threads() {
-	int i, ret;
+	int i, ret = 0;
 	/* alloc and stuff */
 
 	pthread_mutex_lock(&msk_global_state->lock);
@@ -573,40 +597,34 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	struct msk_worker_data *wd;
 	int i;
 
-	INFO_LOG(trans->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p, used %i", trans, ctx, ctx->used);
-
-	// Don't signal and do it directly if no worker
-	if (msk_global_state->worker_pool.worker_count == -1) {
-		if (flag & MSK_HAS_TRANS_CTX_LOCK)
-			pthread_mutex_unlock(&trans->ctx_lock);
-		msk_worker_callback(trans, ctx, status, opcode);
-		if (flag & MSK_HAS_TRANS_CTX_LOCK)
-			pthread_mutex_lock(&trans->ctx_lock);
+	if (!atomic_bool_compare_and_swap(&ctx->used, MSK_CTX_PENDING, MSK_CTX_PROCESSING)) {
+		// nothing to do
 		return 0;
 	}
 
+	INFO_LOG(trans->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p", trans, ctx);
 
-	// needs CM lock and not ctx lock because only flush cares about processing and it doesn't change anything else for other things holding ctx lock...
-	if (flag & MSK_HAS_TRANS_CM_LOCK)
-		ctx->used = MSK_CTX_PROCESSING;
+	// Don't signal and do it directly if no worker
+	if (msk_global_state->worker_pool.worker_count == -1) {
+		msk_worker_callback(trans, ctx, status, opcode, flag);
+		return 0;
+	}
+
 
 	while (atomic_inc(msk_global_state->worker_pool.m_count) > msk_global_state->worker_pool.size
 	    && msk_global_state->run_threads > 0) {
 		uint64_t n;
 		if (flag & MSK_HAS_TRANS_CM_LOCK)
-			pthread_mutex_unlock(&trans->cm_lock);
-		if (flag & MSK_HAS_TRANS_CTX_LOCK)
-			pthread_mutex_unlock(&trans->ctx_lock);
+			msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
+
 		if (eventfd_read(msk_global_state->worker_pool.m_efd, &n) || n > INT_MAX) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
 		} else {
 			printf("master: %d\n", (int)n);
 			atomic_sub(msk_global_state->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
 		}
-		if (flag & MSK_HAS_TRANS_CTX_LOCK)
-			pthread_mutex_lock(&trans->ctx_lock);
 		if (flag & MSK_HAS_TRANS_CM_LOCK)
-			pthread_mutex_lock(&trans->cm_lock);
+			msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 	}
 
 	do {
@@ -826,39 +844,41 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	switch (event->event) {
 	case RDMA_CM_EVENT_ADDR_RESOLVED:
 		INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "ADDR_RESOLVED");
-		pthread_mutex_lock(&trans->cm_lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		trans->state = MSK_ADDR_RESOLVED;
 		pthread_cond_broadcast(&trans->cm_cond);
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		break;
 
 	case RDMA_CM_EVENT_ROUTE_RESOLVED:
 		INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "ROUTE_RESOLVED");
-		pthread_mutex_lock(&trans->cm_lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		trans->state = MSK_ROUTE_RESOLVED;
 		pthread_cond_broadcast(&trans->cm_cond);
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		break;
 
 	case RDMA_CM_EVENT_ESTABLISHED:
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ESTABLISHED");
-		pthread_mutex_lock(&trans->cm_lock);
-		if ((ret = msk_check_create_epoll_thread(&msk_global_state->cq_thread, msk_cq_thread, trans, &msk_global_state->cq_epollfd))
-		|| (ret = msk_check_create_epoll_thread(&msk_global_state->stats_thread, msk_stats_thread, trans, &msk_global_state->stats_epollfd))) {
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread failed: %s (%d)", strerror(ret), ret);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
+		if ((ret = msk_check_create_epoll_thread(&msk_global_state->cq_thread, msk_cq_thread, trans, &msk_global_state->cq_epollfd))) {
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread for cq failed: %s (%d)", strerror(ret), ret);
+			trans->state = MSK_ERROR;
+		} else if (trans->stats_prefix != NULL && (ret = msk_check_create_epoll_thread(&msk_global_state->stats_thread, msk_stats_thread, trans, &msk_global_state->stats_epollfd))) {
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "msk_check_create_epoll_thread for stats failed: %s (%d)", strerror(ret), ret);
 			trans->state = MSK_ERROR;
 		} else {
 			trans->state = MSK_CONNECTED;
 		}
 
 		pthread_cond_broadcast(&trans->cm_cond);
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		break;
 
 	case RDMA_CM_EVENT_CONNECT_REQUEST:
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "CONNECT_REQUEST");
 		//even if the cm_id is new, trans is the good parent's trans.
-		pthread_mutex_lock(&trans->cm_lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 		//FIXME don't run through this stupidely and remember last index written to and last index read, i.e. use as a queue
 		/* Find an empty connection request slot */
@@ -867,7 +887,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 				break;
 
 		if (i == trans->server) {
-			pthread_mutex_unlock(&trans->cm_lock);
+			msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not pile up new connection requests' cm_id!");
 			ret = ENOBUFS;
 			break;
@@ -876,7 +896,7 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		// write down new cm_id and signal accept handler there's stuff to do
 		trans->conn_requests[i] = cm_id;
 		pthread_cond_broadcast(&trans->cm_cond);
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 		break;
 
@@ -887,10 +907,10 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 	case RDMA_CM_EVENT_REJECTED:
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cma event %s, error %d",
 			rdma_event_str(event->event), event->status);
-		pthread_mutex_lock(&trans->cm_lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		trans->state = MSK_ERROR;
 		pthread_cond_broadcast(&trans->cm_cond);
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		break;
 
 	case RDMA_CM_EVENT_DISCONNECTED:
@@ -900,10 +920,10 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 		if (trans->comp_channel)
 			msk_cq_delfd(trans);
 
-		pthread_mutex_lock(&trans->cm_lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		trans->state = MSK_CLOSED;
 		pthread_cond_broadcast(&trans->cm_cond);
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 		if (trans->disconnect_callback)
 			trans->disconnect_callback(trans);
@@ -1047,7 +1067,7 @@ static int msk_cq_event_handler(struct msk_trans *trans, enum msk_lock_flag flag
 					default:
 						break;
 				}
-				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, -1, flag);
+				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, wc[i].opcode, flag);
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
@@ -1161,10 +1181,10 @@ static void *msk_cq_thread(void *arg) {
 			if (trans->debug & MSK_DEBUG_SPEED)
 				clock_gettime(CLOCK_MONOTONIC, &ts_start);
 
-			pthread_mutex_lock(&trans->cm_lock);
-			if (trans->state == MSK_CLOSED || trans->state == MSK_ERROR) {
+			msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
+			if (trans->state >= MSK_CLOSING) { /* CLOSING, CLOSED, ERROR */
 				// closing trans, skip this, will be done on flush
-				pthread_mutex_unlock(&trans->cm_lock);
+				msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 				continue;
 			}
 
@@ -1176,7 +1196,7 @@ static void *msk_cq_thread(void *arg) {
 					pthread_cond_broadcast(&trans->cm_cond);
 				}
 			}
-			pthread_mutex_unlock(&trans->cm_lock);
+			msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 			if (trans->debug & MSK_DEBUG_SPEED) {
 				clock_gettime(CLOCK_MONOTONIC, &ts_end);
@@ -1201,72 +1221,52 @@ static void msk_flush_buffers(struct msk_trans *trans) {
 
 	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "flushing %p", trans);
 
-	pthread_mutex_lock(&trans->cm_lock);
-	pthread_mutex_lock(&trans->ctx_lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	if (trans->state != MSK_ERROR) {
 		do {
-			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_LOCKS);
+			ret = msk_cq_event_handler(trans, MSK_HAS_TRANS_CM_LOCK);
 		} while (ret == 0);
 
 		if (ret != EAGAIN)
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't flush pending data in cq: %d", ret);
 	}
 
-	for (i = 0, ctx = trans->recv_buf;
-	     i < trans->qp_attr.cap.max_recv_wr;
-	     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
-		if (ctx->used == MSK_CTX_PENDING) {
-			ctx->used = MSK_CTX_PROCESSING;
-			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV, MSK_HAS_TRANS_LOCKS);
-		}
+	/* only flush rx if client or accepting server */
+	if (trans->server >= 0)
+	    for (i = 0, ctx = trans->rctx;
+		 i < trans->rq_depth;
+		 i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->max_recv_sge*sizeof(struct ibv_sge)))
+			if (ctx->used == MSK_CTX_PENDING)
+				msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_RECV, MSK_HAS_TRANS_CM_LOCK);
 
-	for (i = 0, ctx = (struct msk_ctx *)trans->send_buf;
-	     i < trans->qp_attr.cap.max_send_wr;
-	     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
-		if (ctx->used == MSK_CTX_PENDING) {
-			ctx->used = MSK_CTX_PROCESSING;
-			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND, MSK_HAS_TRANS_LOCKS);
-		}
+	for (i = 0, ctx = (struct msk_ctx *)trans->wctx;
+	     i < trans->sq_depth;
+	     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->max_send_sge*sizeof(struct ibv_sge)))
+		if (ctx->used == MSK_CTX_PENDING)
+			msk_signal_worker(trans, ctx, IBV_WC_FATAL_ERR, IBV_WC_SEND, MSK_HAS_TRANS_CM_LOCK);
 
+	/* only flush rx if client or accepting server */
+	if (trans->server >= 0) do {
+		wait = 0;
+			for (i = 0, ctx = trans->rctx;
+			     i < trans->rq_depth;
+			     i++, ctx = msk_next_ctx(ctx, trans->max_recv_sge))
+				if (ctx->used != MSK_CTX_FREE)
+					wait++;
 
-
+	} while (wait && usleep(100000));
 	do {
 		wait = 0;
-		for (i = 0, ctx = trans->recv_buf;
-		     i < trans->qp_attr.cap.max_recv_wr;
-		     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
+		for (i = 0, ctx = (struct msk_ctx *)trans->wctx;
+		     i < trans->sq_depth;
+		     i++, ctx = msk_next_ctx(ctx, trans->max_recv_sge))
 			if (ctx->used != MSK_CTX_FREE)
 				wait++;
 
-		for (i = 0, ctx = (struct msk_ctx *)trans->send_buf;
-		     i < trans->qp_attr.cap.max_send_wr;
-		     i++, ctx = (struct msk_ctx*)((uint8_t*)ctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
-			if (ctx->used != MSK_CTX_FREE)
-				wait++;
+	} while (wait && usleep(100000));
 
-	} while (wait && pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock) == 0);
-
-	pthread_mutex_unlock(&trans->ctx_lock);
-	pthread_mutex_unlock(&trans->cm_lock);
-}
-
-/**
- * msk_destroy_buffer
- *
- * @param trans [INOUT]
- *
- * @return void even if some stuff here can fail //FIXME?
- */
-static void msk_destroy_buffer(struct msk_trans *trans) {
-	if (trans->send_buf) {
-		free(trans->send_buf);
-		trans->send_buf = NULL;
-	}
-	if (trans->recv_buf) {
-		free(trans->recv_buf);
-		trans->recv_buf = NULL;
-	}
+	msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 }
 
 /**
@@ -1296,14 +1296,26 @@ static void msk_destroy_qp(struct msk_trans *trans) {
 	if (trans->server >= 0 && trans->pd) {
 		if (atomic_dec(trans->pd->refcnt) == 0) {
 			int i = 0;
-			while (trans->pd[i].context != PD_GUARD && trans->pd[i].pd != NULL) {
-				ibv_dealloc_pd(trans->pd[i].pd);
+			while (trans->pd[i].context != PD_GUARD && trans->pd[i].context != NULL) {
+				if (trans->pd[i].pd)
+					ibv_dealloc_pd(trans->pd[i].pd);
 				trans->pd[i].pd = NULL;
+				if (trans->pd[i].srq)
+					ibv_destroy_srq(trans->pd[i].srq);
+				trans->pd[i].srq = NULL;
+				if (trans->pd[i].rctx)
+					free(trans->pd[i].rctx);
+				trans->pd[i].rctx = NULL;
 				i++;
 			}
 			free(trans->pd);
 			trans->pd = NULL;
 		}
+	}
+	trans->rctx = NULL;
+	if (trans->wctx) {
+		free(trans->wctx);
+		trans->wctx = NULL;
 	}
 }
 
@@ -1314,13 +1326,12 @@ static void msk_destroy_qp(struct msk_trans *trans) {
  * @param ptrans [INOUT] pointer to the trans to destroy
  */
 void msk_destroy_trans(struct msk_trans **ptrans) {
-
 	struct msk_trans *trans = *ptrans;
 
 	if (trans) {
 		trans->destroy_on_disconnect = 0;
 		if (trans->state == MSK_CONNECTED || trans->state == MSK_CLOSED) {
-			pthread_mutex_lock(&trans->cm_lock);
+			msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 			if (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR)
 				trans->state = MSK_CLOSING;
 
@@ -1329,10 +1340,10 @@ void msk_destroy_trans(struct msk_trans **ptrans) {
 
 			while (trans->state != MSK_CLOSED && trans->state != MSK_LISTENING && trans->state != MSK_ERROR) {
 				INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "we're not closed yet, waiting for disconnect_event");
-				pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+				msk_cond_wait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock);
 			}
 			trans->state = MSK_CLOSED;
-			pthread_mutex_unlock(&trans->cm_lock);
+			msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		}
 
 		if (trans->cm_id) {
@@ -1357,11 +1368,11 @@ void msk_destroy_trans(struct msk_trans **ptrans) {
 				free(trans->node);
 			if (trans->port)
 				free(trans->port);
+
 		}
 
 		// these two functions do the proper if checks
 		msk_destroy_qp(trans);
-		msk_destroy_buffer(trans);
 
 		pthread_mutex_lock(&msk_global_state->lock);
 		msk_global_state->run_threads--;
@@ -1384,10 +1395,9 @@ void msk_destroy_trans(struct msk_trans **ptrans) {
 
 
 		//FIXME check if it is init. if not should just return EINVAL but.. lock.__lock, cond.__lock might work.
-		pthread_mutex_unlock(&trans->cm_lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		pthread_mutex_destroy(&trans->cm_lock);
 		pthread_cond_destroy(&trans->cm_cond);
-		pthread_cond_destroy(&trans->ctx_cond);
 
 		free(trans);
 		*ptrans = NULL;
@@ -1459,17 +1469,14 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 		/*memcpy(trans->qp_attr, attr->qp_attr, sizeof(struct ibv_qp_init_attr));*/
 
 		/* fill in default values */
-		trans->qp_attr.cap.max_send_wr = attr->sq_depth ? attr->sq_depth : 50;
-		trans->qp_attr.cap.max_recv_wr = attr->rq_depth ? attr->rq_depth : 50;
-		trans->qp_attr.cap.max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
-		trans->qp_attr.cap.max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
-		trans->qp_attr.cap.max_inline_data = 0; // change if IMM
-		trans->qp_attr.qp_type = (attr->conn_type == RDMA_PS_UDP ? IBV_QPT_UD : IBV_QPT_RC);
-		trans->qp_attr.sq_sig_all = 1;
+		trans->sq_depth = attr->sq_depth ? attr->sq_depth : 50;
+		trans->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
+		trans->rq_depth = attr->rq_depth ? attr->rq_depth : 50;
+		trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 
 		trans->server = attr->server;
 		trans->debug = attr->debug;
-		trans->timeout = attr->timeout   ? attr->timeout  : 3000000; // in ms
+		trans->timeout = attr->timeout   ? attr->timeout  : 30000; // in ms
 		trans->disconnect_callback = attr->disconnect_callback;
 		trans->destroy_on_disconnect = attr->destroy_on_disconnect;
 		if (attr->stats_prefix) {
@@ -1491,24 +1498,10 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 				atomic_dec(attr->pd->refcnt);
 		}
 
-		ret = pthread_mutex_init(&trans->cm_lock, NULL);
+		ret = pthread_mutex_init(&trans->cm_lock, NULL)
+			|| pthread_cond_init(&trans->cm_cond, NULL);
 		if (ret) {
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-			break;
-		}
-		ret = pthread_cond_init(&trans->cm_cond, NULL);
-		if (ret) {
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-			break;
-		}
-		ret = pthread_mutex_init(&trans->ctx_lock, NULL);
-		if (ret) {
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-			break;
-		}
-		ret = pthread_cond_init(&trans->ctx_cond, NULL);
-		if (ret) {
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "pthread_mutex/cond_init failed: %s (%d)", strerror(ret), ret);
 			break;
 		}
 
@@ -1553,8 +1546,20 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
  */
 static int msk_create_qp(struct msk_trans *trans, struct rdma_cm_id *cm_id) {
 	int ret;
+	struct ibv_qp_init_attr qp_attr = {
+		.cap.max_send_wr = trans->sq_depth,
+		.cap.max_send_sge = trans->max_send_sge,
+		.cap.max_recv_wr = trans->rq_depth,
+		.cap.max_recv_sge = trans->max_recv_sge,
+		.cap.max_inline_data = 0, // change if IMM
+		.qp_type = (trans->conn_type == RDMA_PS_UDP ? IBV_QPT_UD : IBV_QPT_RC),
+		.sq_sig_all = 1,
+		.send_cq = trans->cq,
+		.recv_cq = trans->cq,
+		.srq = trans->srq,
+	};
 
-	if (rdma_create_qp(cm_id, msk_getpd(trans)->pd, &trans->qp_attr)) {
+	if (rdma_create_qp(cm_id, msk_getpd(trans)->pd, &qp_attr)) {
 		ret = errno;
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_create_qp: %s (%d)", strerror(ret), ret);
 		return ret;
@@ -1584,7 +1589,7 @@ static int msk_setup_qp(struct msk_trans *trans) {
 		return ret;
 	}
 
-	trans->cq = ibv_create_cq(trans->cm_id->verbs, trans->qp_attr.cap.max_send_wr + trans->qp_attr.cap.max_recv_wr,
+	trans->cq = ibv_create_cq(trans->cm_id->verbs, trans->sq_depth + trans->rq_depth,
 				  trans, trans->comp_channel, 0);
 	if (!trans->cq) {
 		ret = errno;
@@ -1592,8 +1597,6 @@ static int msk_setup_qp(struct msk_trans *trans) {
 		msk_destroy_qp(trans);
 		return ret;
 	}
-	trans->qp_attr.send_cq = trans->cq;
-	trans->qp_attr.recv_cq = trans->cq;
 
 	ret = ibv_req_notify_cq(trans->cq, 0);
 	if (ret) {
@@ -1615,22 +1618,25 @@ static int msk_setup_qp(struct msk_trans *trans) {
 
 
 /**
- * msk_setup_buffer
+ * msk_setup_*ctx
  */
-static int msk_setup_buffer(struct msk_trans *trans) {
-	trans->recv_buf = malloc(trans->qp_attr.cap.max_recv_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
-	if (!trans->recv_buf) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->recv_buf");
+static int msk_setup_rctx(struct msk_trans *trans) {
+	trans->rctx = malloc(trans->rq_depth * (sizeof(struct msk_ctx) + trans->max_recv_sge * sizeof(struct ibv_sge)));
+	if (!trans->rctx) {
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->rctx");
 		return ENOMEM;
 	}
-	memset(trans->recv_buf, 0, trans->qp_attr.cap.max_recv_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge * sizeof(struct ibv_sge)));
+	memset(trans->rctx, 0, trans->rq_depth * (sizeof(struct msk_ctx) + trans->max_recv_sge * sizeof(struct ibv_sge)));
+	return 0;
+}
 
-	trans->send_buf = malloc(trans->qp_attr.cap.max_send_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
-	if (!trans->send_buf) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->send_buf");
+static int msk_setup_wctx(struct msk_trans *trans) {
+	trans->wctx = malloc(trans->sq_depth * (sizeof(struct msk_ctx) + trans->max_send_sge * sizeof(struct ibv_sge)));
+	if (!trans->wctx) {
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't malloc trans->wctx");
 		return ENOMEM;
 	}
-	memset(trans->send_buf, 0, trans->qp_attr.cap.max_send_wr * (sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge * sizeof(struct ibv_sge)));
+	memset(trans->wctx, 0, trans->sq_depth * (sizeof(struct msk_ctx) + trans->max_send_sge * sizeof(struct ibv_sge)));
 
 	return 0;
 }
@@ -1739,11 +1745,30 @@ static struct msk_trans *clone_trans(struct msk_trans *listening_trans, struct r
 			return NULL;
 		}
 	}
+	if (!pd->srq) {
+		struct ibv_srq_init_attr srq_attr = {
+			.attr.max_wr = trans->rq_depth,
+			.attr.max_sge = trans->max_recv_sge,
+		};
+		pd->srq = ibv_create_srq(pd->pd, &srq_attr);
+		if (!pd->srq) {
+			ret = errno;
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_create_srq failed: %s (%d)", strerror(ret), ret);
+			return NULL;
+		}
+	}
+
+	if (!pd->rctx) {
+		msk_setup_rctx(trans);
+		pd->rctx = trans->rctx;
+	} else {
+		trans->rctx = pd->rctx;
+	}
+
+	trans->srq = pd->srq;
 
 	memset(&trans->cm_lock, 0, sizeof(pthread_mutex_t));
 	memset(&trans->cm_cond, 0, sizeof(pthread_cond_t));
-	memset(&trans->ctx_lock, 0, sizeof(pthread_mutex_t));
-	memset(&trans->ctx_cond, 0, sizeof(pthread_cond_t));
 
 	ret = pthread_mutex_init(&trans->cm_lock, NULL);
 	if (ret) {
@@ -1752,18 +1777,6 @@ static struct msk_trans *clone_trans(struct msk_trans *listening_trans, struct r
 		return NULL;
 	}
 	ret = pthread_cond_init(&trans->cm_cond, NULL);
-	if (ret) {
-		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return NULL;
-	}
-	ret = pthread_mutex_init(&trans->ctx_lock, NULL);
-	if (ret) {
-		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_mutex_init failed: %s (%d)", strerror(ret), ret);
-		msk_destroy_trans(&trans);
-		return NULL;
-	}
-	ret = pthread_cond_init(&trans->ctx_cond, NULL);
 	if (ret) {
 		INFO_LOG(listening_trans->debug & MSK_DEBUG_EVENT, "pthread_cond_init failed: %s (%d)", strerror(ret), ret);
 		msk_destroy_trans(&trans);
@@ -1800,7 +1813,7 @@ int msk_finalize_accept(struct msk_trans *trans) {
 	conn_param.private_data_len = 0;
 	conn_param.rnr_retry_count = 10;
 
-	pthread_mutex_lock(&trans->cm_lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 	do {
 		ret = rdma_accept(trans->cm_id, &conn_param);
 		if (ret) {
@@ -1809,7 +1822,7 @@ int msk_finalize_accept(struct msk_trans *trans) {
 			break;
 		}
 		while (trans->state == MSK_CONNECT_REQUEST) {
-			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			msk_cond_wait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock);
 			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 
@@ -1823,7 +1836,7 @@ int msk_finalize_accept(struct msk_trans *trans) {
 		}
 	} while (0);
 
-	pthread_mutex_unlock(&trans->cm_lock);
+	msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	return ret;
 }
@@ -1848,7 +1861,7 @@ struct msk_trans *msk_accept_one_timedwait(struct msk_trans *trans, struct times
 		return NULL;
 	}
 
-	pthread_mutex_lock(&trans->cm_lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 	ret = 0;
 	while (!cm_id && ret == 0) {
 		/* See if one of the slots has been taken */
@@ -1859,26 +1872,24 @@ struct msk_trans *msk_accept_one_timedwait(struct msk_trans *trans, struct times
 		if (i == trans->server) {
 			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Waiting for a connection to come in");
 			if (abstime)
-				ret = pthread_cond_timedwait(&trans->cm_cond, &trans->cm_lock, abstime);
+				ret = msk_cond_timedwait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock, abstime);
 			else
-				ret = pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+				ret = msk_cond_wait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock);
 		} else {
 			cm_id = trans->conn_requests[i];
 			trans->conn_requests[i] = NULL;
 		}
 	}
-	pthread_mutex_unlock(&trans->cm_lock);
 
-	if (ret == ETIMEDOUT) {
-		return NULL;
-	}
 	if (ret) {
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 		return NULL;
 	}
 
 	INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a connection request - creating child");
-
 	child_trans = clone_trans(trans, cm_id);
+
+	msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	if (child_trans) {
 		if ((ret = msk_setup_qp(child_trans))) {
@@ -1886,7 +1897,7 @@ struct msk_trans *msk_accept_one_timedwait(struct msk_trans *trans, struct times
 			msk_destroy_trans(&child_trans);
 			return NULL;
 		}
-		if ((ret = msk_setup_buffer(child_trans))) {
+		if ((ret = msk_setup_wctx(child_trans))) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "Could not setup child trans's buffer: %s (%d)", strerror(ret), ret);
 			msk_destroy_trans(&child_trans);
 			return NULL;
@@ -1921,7 +1932,7 @@ static int msk_bind_client(struct msk_trans *trans) {
 	struct rdma_addrinfo hints, *res;
 	int ret;
 
-	pthread_mutex_lock(&trans->cm_lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	do {
 		memset(&hints, 0, sizeof(struct rdma_addrinfo));
@@ -1944,7 +1955,7 @@ static int msk_bind_client(struct msk_trans *trans) {
 
 
 		while (trans->state == MSK_INIT) {
-			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			msk_cond_wait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock);
 			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 		if (trans->state != MSK_ADDR_RESOLVED) {
@@ -1961,7 +1972,7 @@ static int msk_bind_client(struct msk_trans *trans) {
 		}
 
 		while (trans->state == MSK_ADDR_RESOLVED) {
-			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			msk_cond_wait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock);
 			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 
@@ -1972,7 +1983,7 @@ static int msk_bind_client(struct msk_trans *trans) {
 		}
 	} while (0);
 
-	pthread_mutex_unlock(&trans->cm_lock);
+	msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	return ret;
 }
@@ -2000,7 +2011,7 @@ int msk_finalize_connect(struct msk_trans *trans) {
 	conn_param.rnr_retry_count = 10;
 	conn_param.retry_count = 10;
 
-	pthread_mutex_lock(&trans->cm_lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	do {
 		ret = rdma_connect(trans->cm_id, &conn_param);
@@ -2011,7 +2022,7 @@ int msk_finalize_connect(struct msk_trans *trans) {
 		}
 
 		while (trans->state == MSK_ROUTE_RESOLVED) {
-			pthread_cond_wait(&trans->cm_cond, &trans->cm_lock);
+			msk_cond_wait(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_cond, &trans->cm_lock);
 			INFO_LOG(trans->debug & MSK_DEBUG_SETUP, "Got a cond, state: %i", trans->state);
 		}
 
@@ -2025,7 +2036,7 @@ int msk_finalize_connect(struct msk_trans *trans) {
 		}
 	} while (0);
 
-	pthread_mutex_unlock(&trans->cm_lock);
+	msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
 	return ret;
 }
@@ -2084,12 +2095,13 @@ int msk_connect(struct msk_trans *trans) {
 
 	if ((ret = msk_setup_qp(trans)))
 		return ret;
-	if ((ret = msk_setup_buffer(trans)))
+	if ((ret = msk_setup_wctx(trans)) || (ret = msk_setup_rctx(trans)))
 		return ret;
+
+	pd->rctx = trans->rctx;
 
 	return 0;
 }
-
 
 
 /**
@@ -2117,26 +2129,20 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 		return EINVAL;
 	}
 
-
-	pthread_mutex_lock(&trans->ctx_lock);
-
 	do {
-		for (i = 0, rctx = trans->recv_buf;
-		     i < trans->qp_attr.cap.max_recv_wr;
-		     i++, rctx = (struct msk_ctx*)((uint8_t*)rctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_recv_sge*sizeof(struct ibv_sge)))
-			if (!rctx->used != MSK_CTX_FREE)
+		for (i = 0, rctx = trans->rctx;
+		     i < trans->rq_depth;
+		     i++, rctx = msk_next_ctx(rctx, trans->max_recv_sge))
+			if (rctx->used == MSK_CTX_FREE)
 				break;
 
-		if (i == trans->qp_attr.cap.max_recv_wr) {
-			INFO_LOG(trans->debug & MSK_DEBUG_RECV, "Waiting for cond");
-			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
+		if (i == trans->rq_depth) {
+			INFO_LOG(trans->debug & MSK_DEBUG_RECV, "Waiting for rctx");
+			usleep(100000);
 		}
 
-	} while ( i == trans->qp_attr.cap.max_recv_wr );
+	} while ( i == trans->rq_depth || !(atomic_bool_compare_and_swap(&rctx->used, MSK_CTX_FREE, MSK_CTX_PENDING)) );
 	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "got a free context");
-	rctx->used = MSK_CTX_PENDING;
-
-	pthread_mutex_unlock(&trans->ctx_lock);
 
 	rctx->callback = callback;
 	rctx->err_callback = err_callback;
@@ -2161,7 +2167,11 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 	rctx->wr.rwr.sg_list = rctx->sg_list;
 	rctx->wr.rwr.num_sge = num_sge;
 
-	ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
+	if (trans->server == MSK_CLIENT)
+		ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
+	else
+		ret = ibv_post_srq_recv(trans->srq, &rctx->wr.rwr, &trans->bad_recv_wr);
+
 	if (ret) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_post_recv failed: %s (%d)", strerror(ret), ret);
 		return ret; // FIXME np_uerror(ret)
@@ -2195,23 +2205,20 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 		return EINVAL;
 	}
 
-	pthread_mutex_lock(&trans->ctx_lock);
 	do {
-		for (i = 0, wctx = (struct msk_ctx *)trans->send_buf;
-		     i < trans->qp_attr.cap.max_send_wr;
-		     i++, wctx = (struct msk_ctx*)((uint8_t*)wctx + sizeof(struct msk_ctx) + trans->qp_attr.cap.max_send_sge*sizeof(struct ibv_sge)))
-			if (!wctx->used != MSK_CTX_FREE)
+		for (i = 0, wctx = trans->wctx;
+		     i < trans->sq_depth;
+		     i++, wctx = msk_next_ctx(wctx, trans->max_send_sge))
+			if (wctx->used == MSK_CTX_FREE)
 				break;
 
-		if (i == trans->qp_attr.cap.max_send_wr) {
-			INFO_LOG(trans->debug & MSK_DEBUG_SEND, "waiting for cond");
-			pthread_cond_wait(&trans->ctx_cond, &trans->ctx_lock);
+		if (i == trans->sq_depth) {
+			INFO_LOG(trans->debug & MSK_DEBUG_SEND, "waiting for wctx");
+			usleep(100000);
 		}
 
-	} while ( i == trans->qp_attr.cap.max_send_wr );
+	} while ( i == trans->sq_depth || !(atomic_bool_compare_and_swap(&wctx->used, MSK_CTX_FREE, MSK_CTX_PENDING)) );
 	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "got a free context");
-	wctx->used = MSK_CTX_PENDING;
-	pthread_mutex_unlock(&trans->ctx_lock);
 
 	wctx->callback = callback;
 	wctx->err_callback = err_callback;
@@ -2287,7 +2294,7 @@ int msk_post_n_send(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
  */
 static void msk_wait_callback(struct msk_trans *trans, msk_data_t *data, void *arg) {
 	pthread_mutex_t *lock = arg;
-	pthread_mutex_unlock(lock);
+	msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, lock);
 }
 
 /**
@@ -2304,12 +2311,12 @@ int msk_wait_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
-	pthread_mutex_lock(&lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 	ret = msk_post_n_recv(trans, data, num_sge, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
-		pthread_mutex_lock(&lock);
-		pthread_mutex_unlock(&lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 		pthread_mutex_destroy(&lock);
 	}
 
@@ -2328,12 +2335,12 @@ int msk_wait_n_send(struct msk_trans *trans, msk_data_t *data, int num_sge) {
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
-	pthread_mutex_lock(&lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 	ret = msk_post_n_send(trans, data, num_sge, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
-		pthread_mutex_lock(&lock);
-		pthread_mutex_unlock(&lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 		pthread_mutex_destroy(&lock);
 	}
 
@@ -2358,12 +2365,12 @@ int msk_wait_n_read(struct msk_trans *trans, msk_data_t *data, int num_sge, msk_
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
-	pthread_mutex_lock(&lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 	ret = msk_post_n_read(trans, data, num_sge, rloc, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
-		pthread_mutex_lock(&lock);
-		pthread_mutex_unlock(&lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 		pthread_mutex_destroy(&lock);
 	}
 
@@ -2375,12 +2382,12 @@ int msk_wait_n_write(struct msk_trans *trans, msk_data_t *data, int num_sge, msk
 	pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int ret;
 
-	pthread_mutex_lock(&lock);
+	msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 	ret = msk_post_n_write(trans, data, num_sge, rloc, msk_wait_callback, msk_wait_callback, &lock);
 
 	if (!ret) {
-		pthread_mutex_lock(&lock);
-		pthread_mutex_unlock(&lock);
+		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
+		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &lock);
 		pthread_mutex_destroy(&lock);
 	}
 

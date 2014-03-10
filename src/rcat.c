@@ -48,7 +48,7 @@
 #include "mooshika.h"
 
 #define DEFAULT_BLOCK_SIZE 1024*1024
-#define RECV_NUM 1
+#define RECV_NUM 4
 
 struct cb_arg {
 	msk_data_t *ackdata;
@@ -82,7 +82,7 @@ void callback_error(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
-	struct cb_arg *cb_arg = arg;
+	struct cb_arg *cb_arg = trans->private_data;
 	int n;
 
 	if (!cb_arg) {
@@ -132,7 +132,6 @@ void print_help(char **argv) {
 void* handle_trans(void *arg) {
 	msk_trans_t *trans = arg;
 	struct thread_arg *thread_arg = trans->private_data;
-	uint8_t *rdmabuf;
 	struct ibv_mr *mr;
 	msk_data_t *wdata;
 	msk_data_t *ackdata;
@@ -140,23 +139,16 @@ void* handle_trans(void *arg) {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 
-	msk_data_t *rdata;
 	struct cb_arg *cb_arg;
 	int i;
 
 	struct pollfd pollfd_stdin;
 
 
-	// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
-#define RDMABUF_SIZE (RECV_NUM+2)*thread_arg->block_size
-	TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
-	memset(rdmabuf, 0, RDMABUF_SIZE);
-	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
-
-
 	// malloc mooshika's data structs (i.e. max_size+size+pointer to actual data), for ack buffer
-	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)));
-	ackdata->data = rdmabuf+(RECV_NUM+1)*thread_arg->block_size;
+	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)+1));
+	TEST_NZ(mr = msk_reg_mr(trans, (uint8_t*)(ackdata + 1), 1, IBV_ACCESS_LOCAL_WRITE));
+	ackdata->data = (uint8_t*)(ackdata + 1);
 	ackdata->max_size = thread_arg->block_size;
 	ackdata->size = 1;
 	ackdata->data[0] = 0;
@@ -165,19 +157,11 @@ void* handle_trans(void *arg) {
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
 
-	// malloc receive structs as well as a custom callback argument, and post it for future receive
-	TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t)));
-	TEST_NZ(cb_arg = malloc(RECV_NUM*sizeof(struct cb_arg)));
+	TEST_NZ(cb_arg = malloc(sizeof(struct cb_arg)));
 
-	for (i=0; i < RECV_NUM; i++) {
-		rdata[i].data=rdmabuf+i*thread_arg->block_size;
-		rdata[i].max_size=thread_arg->block_size;
-		rdata[i].mr = mr;
-		cb_arg[i].ackdata = ackdata;
-		cb_arg[i].lock = &lock;
-		cb_arg[i].cond = &cond;
-		TEST_Z(msk_post_recv(trans, &rdata[i], callback_recv, callback_error, &(cb_arg[i])));
-	}
+	cb_arg->ackdata = ackdata;
+	cb_arg->lock = &lock;
+	cb_arg->cond = &cond;
 
 	trans->private_data = cb_arg;
 
@@ -190,8 +174,9 @@ void* handle_trans(void *arg) {
 
 
 	// malloc write (send) structs to post data read from stdin
-	TEST_NZ(wdata = malloc(sizeof(msk_data_t)));
-	wdata->data = rdmabuf+RECV_NUM*thread_arg->block_size;
+	TEST_NZ(wdata = malloc(sizeof(msk_data_t)+thread_arg->block_size));
+	TEST_NZ(mr = msk_reg_mr(trans, (uint8_t*)(wdata+1), thread_arg->block_size, IBV_ACCESS_LOCAL_WRITE));
+	wdata->data = (uint8_t*)(wdata+1);
 	wdata->max_size = thread_arg->block_size;
 	wdata->mr = mr;
 
@@ -235,21 +220,48 @@ void* handle_trans(void *arg) {
 			trans->stats.nsec_compevent / NSEC_IN_SEC, trans->stats.nsec_compevent % NSEC_IN_SEC);
 
 
-	TEST_Z(msk_dereg_mr(mr));
+	TEST_Z(msk_dereg_mr(wdata->mr));
+	TEST_Z(msk_dereg_mr(ackdata->mr));
 
 	msk_destroy_trans(&trans);
 
 	// free stuff
 	free(wdata);
 	free(cb_arg);
-	free(rdata);
 	free(ackdata);
-	free(rdmabuf);
 
 	if (thread_arg->mt_server)
 		pthread_exit(NULL);
 	else
 		return NULL;
+}
+
+int setup_recv(msk_trans_t *trans, struct thread_arg *thread_arg) {
+	struct msk_pd *pd;
+	uint8_t *rdmabuf;
+	msk_data_t *rdata;
+	struct ibv_mr *mr;
+	int i;
+
+	TEST_NZ(pd = msk_getpd(trans));
+	if (!pd->private) {
+		// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
+#define RDMABUF_SIZE (RECV_NUM+2)*thread_arg->block_size
+		TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
+		memset(rdmabuf, 0, RDMABUF_SIZE);
+		TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
+		// malloc receive structs as well as a custom callback argument, and post it for future receive
+		TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t)));
+		for (i=0; i < RECV_NUM; i++) {
+			rdata[i].data=rdmabuf+i*thread_arg->block_size;
+			rdata[i].max_size=thread_arg->block_size;
+			rdata[i].mr = mr;
+			TEST_Z(msk_post_recv(trans, &rdata[i], callback_recv, callback_error, NULL));
+		}
+		pd->private = (void*)1;
+	}
+
+	return 0;
 }
 
 int main(int argc, char **argv) {
@@ -396,17 +408,19 @@ int main(int argc, char **argv) {
 					ERROR_LOG("accept_one failed!");
 					break;
 				}
+				TEST_Z(setup_recv(child_trans, &thread_arg));
 				pthread_create(&id, &attr_thr, handle_trans, child_trans);
 			}
 		} else {
 			child_trans = msk_accept_one(trans);
+			TEST_Z(setup_recv(child_trans, &thread_arg));
 			handle_trans(child_trans);
 		}
 		msk_destroy_trans(&trans);
 	} else { //client
 		TEST_Z(msk_connect(trans));
+		TEST_Z(setup_recv(trans, &thread_arg));
 		handle_trans(trans);
-	       
 	}
 
 	return 0;

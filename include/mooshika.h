@@ -35,6 +35,8 @@
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 
+#define MOOSHIKA_API_VERSION 4
+
 typedef struct msk_trans msk_trans_t;
 typedef struct msk_trans_attr msk_trans_attr_t;
 
@@ -72,6 +74,8 @@ struct msk_stats {
 struct msk_pd {
 	struct ibv_context *context;
 	struct ibv_pd *pd;
+	struct ibv_srq *srq;
+	struct msk_ctx *rctx;
 	void *private;
 	uint32_t refcnt;
 	uint32_t used;
@@ -102,13 +106,17 @@ struct msk_trans {
 	struct rdma_cm_id *cm_id;	/**< The RDMA CM ID */
 	struct rdma_event_channel *event_channel;
 	struct ibv_comp_channel *comp_channel;
-	struct msk_pd *pd;		/**< Protection Domain pointer */
+	struct msk_pd *pd;		/**< Protection Domain pointer list */
 	struct ibv_qp *qp;		/**< Queue Pair pointer */
+	struct ibv_srq *srq;		/**< Shared Receive Queue pointer */
 	struct ibv_cq *cq;		/**< Completion Queue pointer */
 	disconnect_callback_t disconnect_callback;
 	void *private_data;
 	long timeout;			/**< Number of mSecs to wait for connection management events */
-	struct ibv_qp_init_attr qp_attr;
+	int sq_depth;			/**< The depth of the Send Queue */
+	int max_send_sge;		/**< Maximum number of s/g elements per send */
+	int rq_depth;			/**< The depth of the Receive Queue. */
+	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	char *node;			/**< The remote peer's hostname */
 	char *port;			/**< The service port (or name) */
 	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
@@ -116,10 +124,8 @@ struct msk_trans {
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
 	uint32_t debug;
 	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
-	struct msk_ctx *send_buf;		/**< pointer to actual context data */
-	struct msk_ctx *recv_buf;		/**< pointer to actual context data */
-	pthread_mutex_t ctx_lock;	/**< lock for contexts */
-	pthread_cond_t ctx_cond;	/**< cond for contexts */
+	struct msk_ctx *wctx;		/**< pointer to actual context data */
+	struct msk_ctx *rctx;		/**< pointer to actual context data */
 	pthread_mutex_t cm_lock;	/**< lock for connection events */
 	pthread_cond_t cm_cond;		/**< cond for connection events */
 	struct ibv_recv_wr *bad_recv_wr;
@@ -152,6 +158,7 @@ struct msk_trans_attr {
 #define MSK_DEBUG_SETUP 0x0002
 #define MSK_DEBUG_SEND  0x0004
 #define MSK_DEBUG_RECV  0x0008
+#define MSK_DEBUG_CM_LOCKS   0x0010
 #define MSK_DEBUG_SPEED 0x8000
 
 

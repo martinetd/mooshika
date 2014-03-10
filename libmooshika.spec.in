@@ -1,6 +1,6 @@
 Summary: The mooshika library (libmooshika)
 Name: libmooshika
-Version: @_GIT_HEAD_TAG@
+Version: @VERSION@
 Release: @_GIT_HEAD_DESCRIBE@
 Group: Application/Devel
 Packager: Dominique Martinet <dominique.martinet@cea.fr>

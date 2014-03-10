@@ -16,6 +16,7 @@
 #define atomic_add(x,i) __sync_add_and_fetch(&x, i)
 #define atomic_sub(x,i) __sync_sub_and_fetch(&x, i)
 #define atomic_mask(x,i) __sync_and_and_fetch(&x, i)
+#define atomic_bool_compare_and_swap __sync_bool_compare_and_swap
 
 #define set_size(val, unit) do {                                 \
 	switch(unit[0]) {                                        \
