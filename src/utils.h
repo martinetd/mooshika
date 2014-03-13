@@ -6,17 +6,7 @@
 #define TEST_Z(x)  do { int retval; if ( (retval=x)) { ERROR_LOG("error: " #x " failed (returned %d: %s).", retval, strerror(retval) ); exit(retval); } } while (0)
 #define TEST_NZ(x) do { if (!(x)) { ERROR_LOG("error: " #x " failed (returned zero/null)."); exit(-1); }} while (0)
 
-#define atomic_postinc(x) __sync_fetch_and_add(&x, 1)
-#define atomic_postdec(x) __sync_fetch_and_sub(&x, 1)
-#define atomic_postadd(x,i) __sync_fetch_and_add(&x, i)
-#define atomic_postsub(x,i) __sync_fetch_and_sub(&x, i)
-#define atomic_postmask(x,i) __sync_fetch_and_and(&x, i)
-#define atomic_inc(x) __sync_add_and_fetch(&x, 1)
-#define atomic_dec(x) __sync_sub_and_fetch(&x, 1)
-#define atomic_add(x,i) __sync_add_and_fetch(&x, i)
-#define atomic_sub(x,i) __sync_sub_and_fetch(&x, i)
-#define atomic_mask(x,i) __sync_and_and_fetch(&x, i)
-#define atomic_bool_compare_and_swap __sync_bool_compare_and_swap
+#include "atomics.h"
 
 #define set_size(val, unit) do {                                 \
 	switch(unit[0]) {                                        \

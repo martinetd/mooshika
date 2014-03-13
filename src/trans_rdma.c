@@ -421,11 +421,7 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 				sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 			}
 		}
-		ctx->used = MSK_CTX_FREE;
-		return;
-	}
-
-	switch (opcode) {
+	} else switch (opcode) {
 		case IBV_WC_SEND:
 		case IBV_WC_RDMA_WRITE:
 		case IBV_WC_RDMA_READ:
@@ -438,8 +434,6 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 					sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 				}
 			}
-
-			ctx->used = MSK_CTX_FREE;
 			break;
 
 		case IBV_WC_RECV:
@@ -453,13 +447,14 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 					sub_timespec(&trans->stats.nsec_callback, &ts_start, &ts_end);
 				}
 			}
-
-			ctx->used = MSK_CTX_FREE;
 			break;
 
 		default:
 			INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "worker thread got weird opcode: %d", opcode);
 	}
+
+	atomic_store(&ctx->used, MSK_CTX_FREE);
+
 	return;
 }
 
@@ -2127,18 +2122,20 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 		return EINVAL;
 	}
 
+	i = 0;
+	rctx = trans->rctx;
 	do {
-		for (i = 0, rctx = trans->rctx;
-		     i < trans->rq_depth;
-		     i++, rctx = msk_next_ctx(rctx, trans->max_recv_sge))
-			if (rctx->used == MSK_CTX_FREE)
-				break;
-
 		if (i == trans->rq_depth) {
-			INFO_LOG(trans->debug & MSK_DEBUG_RECV, "Waiting for rctx");
-			usleep(100000);
+			INFO_LOG(trans->debug & MSK_DEBUG_CTX, "Waiting for rctx");
+			usleep(250);
+			i = 0;
+			rctx = trans->rctx;
 		}
 
+		while (i < trans->rq_depth && rctx->used != MSK_CTX_FREE) {
+			rctx = msk_next_ctx(rctx, trans->max_recv_sge);
+			i++;
+		}
 	} while ( i == trans->rq_depth || !(atomic_bool_compare_and_swap(&rctx->used, MSK_CTX_FREE, MSK_CTX_PENDING)) );
 	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "got a free context");
 
@@ -2203,18 +2200,20 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 		return EINVAL;
 	}
 
+	i = 0;
+	wctx = trans->wctx;
 	do {
-		for (i = 0, wctx = trans->wctx;
-		     i < trans->sq_depth;
-		     i++, wctx = msk_next_ctx(wctx, trans->max_send_sge))
-			if (wctx->used == MSK_CTX_FREE)
-				break;
-
 		if (i == trans->sq_depth) {
-			INFO_LOG(trans->debug & MSK_DEBUG_SEND, "waiting for wctx");
-			usleep(100000);
+			INFO_LOG(trans->debug & MSK_DEBUG_CTX, "waiting for wctx");
+			usleep(250);
+			i = 0;
+			wctx = trans->wctx;
 		}
 
+		while (i < trans->sq_depth && wctx->used != MSK_CTX_FREE) {
+			wctx = msk_next_ctx(wctx, trans->max_send_sge);
+			i++;
+		}
 	} while ( i == trans->sq_depth || !(atomic_bool_compare_and_swap(&wctx->used, MSK_CTX_FREE, MSK_CTX_PENDING)) );
 	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "got a free context");
 
