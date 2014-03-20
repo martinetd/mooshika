@@ -681,7 +681,8 @@ static int msk_delfd(int fd, int epollfd) {
 	int ret;
 
 	ret = epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL);
-	if (ret == -1) {
+	/* Let epoll deal with multiple deletes of the same fd */
+	if (ret == -1 && errno != ENOENT) {
 		ret = errno;
 		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Failed to del fd to epoll: %s (%d)", strerror(ret), ret);
 		return ret;
@@ -1177,6 +1178,7 @@ static void *msk_cq_thread(void *arg) {
 			msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 			if (trans->state >= MSK_CLOSING) { /* CLOSING, CLOSED, ERROR */
 				// closing trans, skip this, will be done on flush
+				msk_cq_delfd(trans);
 				msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 				continue;
 			}
