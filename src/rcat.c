@@ -48,7 +48,7 @@
 #include "mooshika.h"
 
 #define DEFAULT_BLOCK_SIZE 1024*1024
-#define RECV_NUM 4
+#define DEFAULT_RECV_NUM 4
 
 struct cb_arg {
 	msk_data_t *ackdata;
@@ -59,6 +59,7 @@ struct cb_arg {
 struct thread_arg {
 	int mt_server;
 	int stats;
+	int recv_num;
 	uint32_t block_size;
 };
 
@@ -114,7 +115,7 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 void print_help(char **argv) {
-	printf("Usage: %s {-s|-c addr} [-p port] [-m] [-v] [-b blocksize]\n", argv[0]);
+	printf("Usage: %s {-s|-c addr} [-p port] [-m] [-v] [-b blocksize] [-r recvnum]\n", argv[0]);
 	printf("Mandatory argument, either of:\n"
 		"	-c, --client addr: client to connect to\n"
 		"	-s, --server: server mode\n"
@@ -126,7 +127,9 @@ void print_help(char **argv) {
 		"	-q, --quiet: don't display connection messages\n"
 		"	-D, --stats <prefix>: create a socket where to look stats up at given path\n"
 		"	-d: display stats summary on close\n"
-		"	-b, --block-size size: size of packets to send (default: %u)\n", DEFAULT_BLOCK_SIZE);
+		"	-b, --block-size size: size of packets to send (default: %u)\n"
+		"	-r, --recv-num n: size of receive queue for server (default: %u)\n",
+		DEFAULT_BLOCK_SIZE, DEFAULT_RECV_NUM);
 }
 
 void* handle_trans(void *arg) {
@@ -246,13 +249,13 @@ int setup_recv(msk_trans_t *trans, struct thread_arg *thread_arg) {
 	TEST_NZ(pd = msk_getpd(trans));
 	if (!pd->private) {
 		// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
-#define RDMABUF_SIZE (RECV_NUM+2)*thread_arg->block_size
+#define RDMABUF_SIZE (thread_arg->recv_num+2)*thread_arg->block_size
 		TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
 		memset(rdmabuf, 0, RDMABUF_SIZE);
 		TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
 		// malloc receive structs as well as a custom callback argument, and post it for future receive
-		TEST_NZ(rdata = malloc(RECV_NUM*sizeof(msk_data_t)));
-		for (i=0; i < RECV_NUM; i++) {
+		TEST_NZ(rdata = malloc(thread_arg->recv_num*sizeof(msk_data_t)));
+		for (i=0; i < thread_arg->recv_num; i++) {
 			rdata[i].data=rdmabuf+i*thread_arg->block_size;
 			rdata[i].max_size=thread_arg->block_size;
 			rdata[i].mr = mr;
@@ -283,6 +286,7 @@ int main(int argc, char **argv) {
 		{ "verbose",	no_argument,		0,		'v' },
 		{ "quiet",	no_argument,		0,		'q' },
 		{ "stats",	required_argument,	0,		'D' },
+		{ "recv-num",	required_argument,	0,		'r' },
 		{ "block-size",	required_argument,	0,		'b' },
 		{ 0,		0,			0,		 0  }
 	};
@@ -297,11 +301,10 @@ int main(int argc, char **argv) {
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
 	attr.debug = 1;
-	attr.rq_depth = RECV_NUM+2;
 	attr.disconnect_callback = callback_disconnect;
 	attr.port = "1235"; /* default port */
 
-	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:dD:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:dD:r:", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -321,6 +324,13 @@ int main(int argc, char **argv) {
 					set_size(thread_arg.block_size, tmp_s);
 				}
 				INFO_LOG(attr.debug > 1, "block size: %u", thread_arg.block_size);
+				break;
+			case 'r':
+				thread_arg.recv_num = strtoul(optarg, &tmp_s, 0);
+				if (errno || thread_arg.recv_num == 0) {
+					thread_arg.recv_num = 0;
+					ERROR_LOG("Invalid block size, assuming default (%u)", DEFAULT_RECV_NUM);
+				}
 				break;
 			case 'h':
 				print_help(argv);
@@ -373,6 +383,10 @@ int main(int argc, char **argv) {
 		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 	if (thread_arg.stats)
 		attr.debug |= MSK_DEBUG_SPEED;
+	if (thread_arg.recv_num == 0)
+		thread_arg.recv_num = attr.server ? DEFAULT_RECV_NUM : 1;
+
+	attr.rq_depth = thread_arg.recv_num+2;
 
 	// writing to stdout is the limiting factor anyway
 	attr.worker_count = -1;
