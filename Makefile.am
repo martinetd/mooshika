@@ -29,4 +29,5 @@ doc:
 EXTRA_DIST=libmooshika.spec \
            src/utils.h \
            src/rmitm.h \
+           src/atomics.h \
            LICENSE
