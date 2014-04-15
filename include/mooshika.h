@@ -35,7 +35,7 @@
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 
-#define MOOSHIKA_API_VERSION 4
+#define MOOSHIKA_API_VERSION 5
 
 typedef struct msk_trans msk_trans_t;
 typedef struct msk_trans_attr msk_trans_attr_t;
@@ -143,6 +143,7 @@ struct msk_trans_attr {
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int max_send_sge;		/**< Maximum number of s/g elements per send */
+	int use_srq;			/**< Does the server use srq? */
 	int rq_depth;			/**< The depth of the Receive Queue. */
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	int worker_count;		/**< Number of worker threads - works only for the first init */

@@ -1307,6 +1307,9 @@ static void msk_destroy_qp(struct msk_trans *trans) {
 			trans->pd = NULL;
 		}
 	}
+	if (!trans->srq) {
+		free(trans->rctx);
+	}
 	trans->rctx = NULL;
 	if (trans->wctx) {
 		free(trans->wctx);
@@ -1470,6 +1473,10 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 		trans->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 
 		trans->server = attr->server;
+		/* listening trans's srq is used as a bool.. */
+		if (trans->server)
+			trans->srq = attr->use_srq ? (void*)1 : NULL;
+
 		trans->debug = attr->debug;
 		trans->timeout = attr->timeout   ? attr->timeout  : 30000; // in ms
 		trans->disconnect_callback = attr->disconnect_callback;
@@ -1740,24 +1747,28 @@ static struct msk_trans *clone_trans(struct msk_trans *listening_trans, struct r
 			return NULL;
 		}
 	}
-	if (!pd->srq) {
-		struct ibv_srq_init_attr srq_attr = {
-			.attr.max_wr = trans->rq_depth,
-			.attr.max_sge = trans->max_recv_sge,
-		};
-		pd->srq = ibv_create_srq(pd->pd, &srq_attr);
+	if (listening_trans->srq) {
 		if (!pd->srq) {
-			ret = errno;
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_create_srq failed: %s (%d)", strerror(ret), ret);
-			return NULL;
+			struct ibv_srq_init_attr srq_attr = {
+				.attr.max_wr = trans->rq_depth,
+				.attr.max_sge = trans->max_recv_sge,
+			};
+			pd->srq = ibv_create_srq(pd->pd, &srq_attr);
+			if (!pd->srq) {
+				ret = errno;
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_create_srq failed: %s (%d)", strerror(ret), ret);
+				return NULL;
+			}
 		}
-	}
 
-	if (!pd->rctx) {
-		msk_setup_rctx(trans);
-		pd->rctx = trans->rctx;
+		if (!pd->rctx) {
+			msk_setup_rctx(trans);
+			pd->rctx = trans->rctx;
+		} else {
+			trans->rctx = pd->rctx;
+		}
 	} else {
-		trans->rctx = pd->rctx;
+		msk_setup_rctx(trans);
 	}
 
 	trans->srq = pd->srq;
@@ -2093,8 +2104,6 @@ int msk_connect(struct msk_trans *trans) {
 	if ((ret = msk_setup_wctx(trans)) || (ret = msk_setup_rctx(trans)))
 		return ret;
 
-	pd->rctx = trans->rctx;
-
 	return 0;
 }
 
@@ -2164,10 +2173,10 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 	rctx->wr.rwr.sg_list = rctx->sg_list;
 	rctx->wr.rwr.num_sge = num_sge;
 
-	if (trans->server == MSK_CLIENT)
-		ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
-	else
+	if (trans->srq)
 		ret = ibv_post_srq_recv(trans->srq, &rctx->wr.rwr, &trans->bad_recv_wr);
+	else
+		ret = ibv_post_recv(trans->qp, &rctx->wr.rwr, &trans->bad_recv_wr);
 
 	if (ret) {
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "ibv_post_recv failed: %s (%d)", strerror(ret), ret);

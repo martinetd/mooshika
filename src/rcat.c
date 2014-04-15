@@ -239,29 +239,40 @@ void* handle_trans(void *arg) {
 		return NULL;
 }
 
-int setup_recv(msk_trans_t *trans, struct thread_arg *thread_arg) {
-	struct msk_pd *pd;
-	uint8_t *rdmabuf;
+
+void post_recvs(msk_trans_t *trans, struct thread_arg *thread_arg) {
+	uint8_t	*rdmabuf;
 	msk_data_t *rdata;
 	struct ibv_mr *mr;
 	int i;
 
-	TEST_NZ(pd = msk_getpd(trans));
-	if (!pd->private) {
-		// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
+	// malloc memory zone that will contain all buffer data (for mr), and register it for our trans
 #define RDMABUF_SIZE (thread_arg->recv_num+2)*thread_arg->block_size
-		TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
-		memset(rdmabuf, 0, RDMABUF_SIZE);
-		TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
-		// malloc receive structs as well as a custom callback argument, and post it for future receive
-		TEST_NZ(rdata = malloc(thread_arg->recv_num*sizeof(msk_data_t)));
-		for (i=0; i < thread_arg->recv_num; i++) {
-			rdata[i].data=rdmabuf+i*thread_arg->block_size;
-			rdata[i].max_size=thread_arg->block_size;
-			rdata[i].mr = mr;
-			TEST_Z(msk_post_recv(trans, &rdata[i], callback_recv, callback_error, NULL));
+	TEST_NZ(rdmabuf = malloc(RDMABUF_SIZE));
+	memset(rdmabuf, 0, RDMABUF_SIZE);
+	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
+	// malloc receive structs as well as a custom callback argument, and post it for future receive
+	TEST_NZ(rdata = malloc(thread_arg->recv_num*sizeof(msk_data_t)));
+	for (i=0; i < thread_arg->recv_num; i++) {
+		rdata[i].data=rdmabuf+i*thread_arg->block_size;
+		rdata[i].max_size=thread_arg->block_size;
+		rdata[i].mr = mr;
+		TEST_Z(msk_post_recv(trans, &rdata[i], callback_recv, callback_error, NULL));
+	}
+}
+
+int setup_recv(msk_trans_t *trans, struct thread_arg *thread_arg) {
+	struct msk_pd *pd;
+
+
+	if (trans->srq) {
+		TEST_NZ(pd = msk_getpd(trans));
+		if (!pd->private) {
+			post_recvs(trans, thread_arg);
+			pd->private = (void*)1;
 		}
-		pd->private = (void*)1;
+	} else {
+		post_recvs(trans, thread_arg);
 	}
 
 	return 0;
@@ -288,6 +299,7 @@ int main(int argc, char **argv) {
 		{ "stats",	required_argument,	0,		'D' },
 		{ "recv-num",	required_argument,	0,		'r' },
 		{ "block-size",	required_argument,	0,		'b' },
+		{ "srq",	no_argument,		0,		'x' },
 		{ 0,		0,			0,		 0  }
 	};
 
@@ -301,10 +313,11 @@ int main(int argc, char **argv) {
 	attr.server = -1; // put an incorrect value to check if we're either client or server
 	// sane values for optional or non-configurable elements
 	attr.debug = 1;
+	attr.use_srq = 0;
 	attr.disconnect_callback = callback_disconnect;
 	attr.port = "1235"; /* default port */
 
-	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:dD:r:", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "@hvqmsb:S:c:p:dD:r:x", long_options, &option_index)) != -1) {
 		switch(op) {
 			case '@':
 				printf("%s compiled on %s at %s\n", argv[0], __DATE__, __TIME__);
@@ -353,11 +366,11 @@ int main(int argc, char **argv) {
 				attr.node = optarg;
 				break;
 			case 's':
-				attr.server = 10;
+				attr.server = 64;
 				attr.node = "::";
 				break;
 			case 'S':
-				attr.server = 10;
+				attr.server = 64;
 				attr.node = optarg;
 				break;
 			case 'p':
@@ -365,6 +378,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'm':
 				thread_arg.mt_server = 1;
+				break;
+			case 'x':
+				attr.use_srq = 1;
 				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
@@ -384,7 +400,7 @@ int main(int argc, char **argv) {
 	if (thread_arg.stats)
 		attr.debug |= MSK_DEBUG_SPEED;
 	if (thread_arg.recv_num == 0)
-		thread_arg.recv_num = attr.server ? DEFAULT_RECV_NUM : 1;
+		thread_arg.recv_num = attr.use_srq ? DEFAULT_RECV_NUM : 1;
 
 	attr.rq_depth = thread_arg.recv_num+2;
 
