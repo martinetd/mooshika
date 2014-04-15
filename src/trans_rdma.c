@@ -484,12 +484,12 @@ static void* msk_worker_thread(void *arg) {
 			}
 			if (msk_global_state->run_threads == 0)
 				break;
-			printf("worker: %d\n", (int)n);
+			INFO_LOG(msk_global_state->debug & MSK_DEBUG_WORKERS, "worker: %d", (int)n);
 			atomic_add(pool->w_count, (int)n);
 			continue;
 		}
 
-		INFO_LOG(msk_global_state->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "thread %lx, depopping wd index %i, count %i, trans %p, ctx %p, used %i", pthread_self(), pool->w_head, pool->w_count, pool->wd_queue[i].trans, pool->wd_queue[i].ctx, pool->wd_queue[i].ctx->used);
+		INFO_LOG(msk_global_state->debug & MSK_DEBUG_WORKERS, "thread %lx, depopping wd index %i, count %i, trans %p, ctx %p, used %i", pthread_self(), pool->w_head, pool->w_count, pool->wd_queue[i].trans, pool->wd_queue[i].ctx, pool->wd_queue[i].ctx->used);
 
 		memcpy(&wd, &pool->wd_queue[i], sizeof(struct msk_worker_data));
 
@@ -587,7 +587,7 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	struct msk_worker_data *wd;
 	int i;
 
-	INFO_LOG(trans->debug & (MSK_DEBUG_SEND | MSK_DEBUG_RECV), "signaling trans %p, ctx %p", trans, ctx);
+	INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "signaling trans %p, ctx %p", trans, ctx);
 
 	// Don't signal and do it directly if no worker
 	if (msk_global_state->worker_pool.worker_count == -1) {
@@ -614,7 +614,7 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 		if (eventfd_read(msk_global_state->worker_pool.m_efd, &n) || n > INT_MAX) {
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
 		} else {
-			printf("master: %d\n", (int)n);
+			INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "master: %d\n", (int)n);
 			atomic_sub(msk_global_state->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
 		}
 		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
