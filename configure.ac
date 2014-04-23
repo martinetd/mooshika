@@ -78,5 +78,5 @@ fi
 AC_SUBST(ac_configure_args)
 
 AC_CONFIG_HEADERS([include/config.h])
-AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile src/libmooshika.pc libmooshika.spec])
+AC_CONFIG_FILES([Makefile src/Makefile src/tests/Makefile src/tools/Makefile src/libmooshika.pc libmooshika.spec])
 AC_OUTPUT

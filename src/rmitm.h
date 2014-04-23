@@ -101,15 +101,13 @@ static inline uint16_t checksum(u_int16_t *data, int len) {
 	return sum;
 }
 
-#define tcp_len(hdr) (ntohs(hdr->ipv6.ip_len) - sizeof(struct ipv6_hdr))
-
 static inline void ipv6_tcp_checksum(struct pkt_hdr *hdr) {
 	uint32_t sum;
 	hdr->tcp.th_sum = 0;
 
 	sum  = checksum((uint16_t*)&hdr->ipv6.ip_src, 2*sizeof(struct in6_addr));
-	sum += htons(IPPROTO_TCP + tcp_len(hdr));
-	sum += checksum((uint16_t*)&hdr->tcp, tcp_len(hdr));
+	sum += htons(IPPROTO_TCP + ntohs(hdr->ipv6.ip_len));
+	sum += checksum((uint16_t*)&hdr->tcp, ntohs(hdr->ipv6.ip_len));
 
 	CHECKSUM_CARRY(sum);
 	hdr->tcp.th_sum = ((~sum) & 0xffff);

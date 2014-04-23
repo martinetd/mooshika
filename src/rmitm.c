@@ -177,14 +177,16 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 
 	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
-	packet->ipv6.ip_len = htons(pcaphdr.len);
+	/* ipv6 payload is tcp header + payload */
+	packet->ipv6.ip_len = htons(pdata->size + sizeof(struct tcp_hdr));
 
 	/* Need the lock both for writing in pcap_dumper AND for ack_nr,
 	 * otherwise some seq numbers are not ordered properly.
 	 */
 	pthread_mutex_lock(priv->targ->plock);
 	packet->tcp.th_seq_nr = priv->seq_nr;
-	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pcaphdr.len - sizeof(struct pkt_hdr));
+	/* increment by the size of the tcp payload: just data */
+	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pdata->size);
 	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 	ipv6_tcp_checksum(packet);
 
