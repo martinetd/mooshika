@@ -206,7 +206,7 @@ int main(int argc, char **argv) {
 	pcap = pcap_open_dead(DLT_RAW, PACKET_SIZE);
 	TEST_NZ(pcap_dumper = pcap_dump_open(pcap, thread_arg.pcap_filename));
 
-	memset(pkt_hdr, 0, sizeof(pkt_hdr));
+	memset(pkt_hdr, 0, sizeof(*pkt_hdr));
 
 	pkt_hdr->ipv6.ip_flags[0] = 0x60; /* 6 in the leftmosts 4 bits */
 	pkt_hdr->ipv6.ip_nh = IPPROTO_TCP;
