@@ -780,7 +780,7 @@ void *msk_stats_thread(void *arg) {
 			trans = (struct msk_trans*)epoll_events[n].data.ptr;
 
 			if (!trans) {
-				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
+				INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
 				continue;
 			}
 
@@ -964,7 +964,7 @@ static void *msk_cm_thread(void *arg) {
 		for (n = 0; n < nfds; ++n) {
 			trans = (struct msk_trans*)epoll_events[n].data.ptr;
 			if (!trans) {
-				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
+				INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
 				continue;
 			}
 
@@ -1164,7 +1164,7 @@ static void *msk_cq_thread(void *arg) {
 			trans = (struct msk_trans*)epoll_events[n].data.ptr;
 
 			if (!trans) {
-				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
+				INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "got an event on a fd that should have been removed! (no trans)");
 				continue;
 			}
 
@@ -1655,7 +1655,7 @@ int msk_bind_server(struct msk_trans *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_INIT) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans must be initialized first!");
 		return EINVAL;
 	}
 
@@ -1808,7 +1808,7 @@ int msk_finalize_accept(struct msk_trans *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_CONNECT_REQUEST) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans isn't from a connection request?");
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans isn't from a connection request?");
 		return EINVAL;
 	}
 
@@ -1863,7 +1863,7 @@ struct msk_trans *msk_accept_one_timedwait(struct msk_trans *trans, struct times
 	int i, ret;
 
 	if (!trans || trans->state != MSK_LISTENING) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans isn't listening (after bind_server)?");
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans isn't listening (after bind_server)?");
 		return NULL;
 	}
 
@@ -2006,7 +2006,7 @@ int msk_finalize_connect(struct msk_trans *trans) {
 	int ret;
 
 	if (!trans || trans->state != MSK_ROUTE_RESOLVED) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans isn't half-connected?");
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans isn't half-connected?");
 		return EINVAL;
 	}
 
@@ -2059,7 +2059,7 @@ int msk_connect(struct msk_trans *trans) {
 	struct msk_pd *pd;
 
 	if (!trans || trans->state != MSK_INIT) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans must be initialized first!");
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans must be initialized first!");
 		return EINVAL;
 	}
 
@@ -2193,9 +2193,7 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 	uint32_t totalsize = 0;
 
 	if (!trans || trans->state != MSK_CONNECTED) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans (%p) isn't connected?", trans);
-		if (trans)
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans (%p) state: %d", trans, trans->state);
 		return EINVAL;
 	}
 
