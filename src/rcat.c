@@ -61,6 +61,7 @@ struct thread_arg {
 	int stats;
 	int recv_num;
 	uint32_t block_size;
+	msk_data_t *rdata;
 };
 
 void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
@@ -242,7 +243,6 @@ void* handle_trans(void *arg) {
 
 void post_recvs(msk_trans_t *trans, struct thread_arg *thread_arg) {
 	uint8_t	*rdmabuf;
-	msk_data_t *rdata;
 	struct ibv_mr *mr;
 	int i;
 
@@ -252,12 +252,12 @@ void post_recvs(msk_trans_t *trans, struct thread_arg *thread_arg) {
 	memset(rdmabuf, 0, RDMABUF_SIZE);
 	TEST_NZ(mr = msk_reg_mr(trans, rdmabuf, RDMABUF_SIZE, IBV_ACCESS_LOCAL_WRITE));
 	// malloc receive structs as well as a custom callback argument, and post it for future receive
-	TEST_NZ(rdata = malloc(thread_arg->recv_num*sizeof(msk_data_t)));
+	TEST_NZ(thread_arg->rdata = malloc(thread_arg->recv_num*sizeof(msk_data_t)));
 	for (i=0; i < thread_arg->recv_num; i++) {
-		rdata[i].data=rdmabuf+i*thread_arg->block_size;
-		rdata[i].max_size=thread_arg->block_size;
-		rdata[i].mr = mr;
-		TEST_Z(msk_post_recv(trans, &rdata[i], callback_recv, callback_error, NULL));
+		thread_arg->rdata[i].data=rdmabuf+i*thread_arg->block_size;
+		thread_arg->rdata[i].max_size=thread_arg->block_size;
+		thread_arg->rdata[i].mr = mr;
+		TEST_Z(msk_post_recv(trans, &thread_arg->rdata[i], callback_recv, callback_error, NULL));
 	}
 }
 
@@ -452,6 +452,9 @@ int main(int argc, char **argv) {
 		TEST_Z(setup_recv(trans, &thread_arg));
 		handle_trans(trans);
 	}
+
+
+	free(thread_arg.rdata);
 
 	return 0;
 }
