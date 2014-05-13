@@ -412,7 +412,7 @@ static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *
 	struct timespec ts_start, ts_end;
 
 	if (status) {
-		if (ctx && ctx->err_callback) {
+		if (ctx->err_callback) {
 			if (trans->debug & MSK_DEBUG_SPEED)
 				clock_gettime(CLOCK_MONOTONIC, &ts_start);
 			ctx->err_callback(trans, ctx->data, ctx->callback_arg);
