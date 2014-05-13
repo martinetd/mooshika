@@ -2122,7 +2122,6 @@ int msk_connect(struct msk_trans *trans) {
  * @return 0 on success, the value of errno on error
  */
 int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
-	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "posting recv");
 	struct msk_ctx *rctx;
 	int i, ret;
 
@@ -2132,6 +2131,8 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
 		return EINVAL;
 	}
+
+	INFO_LOG(trans->debug & MSK_DEBUG_RECV, "posting recv");
 
 	i = 0;
 	rctx = trans->rctx;
@@ -2187,7 +2188,6 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 }
 
 static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opcode, msk_data_t *data, int num_sge, msk_rloc_t *rloc, ctx_callback_t callback, ctx_callback_t err_callback, void* callback_arg) {
-	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "posting a send with op %d", opcode);
 	struct msk_ctx *wctx;
 	int i, ret;
 	uint32_t totalsize = 0;
@@ -2196,6 +2196,8 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans (%p) state: %d", trans, trans->state);
 		return EINVAL;
 	}
+
+	INFO_LOG(trans->debug & MSK_DEBUG_SEND, "posting a send with op %d", opcode);
 
 	// opcode-specific checks:
 	if (opcode == IBV_WR_RDMA_WRITE || opcode == IBV_WR_RDMA_READ) {
