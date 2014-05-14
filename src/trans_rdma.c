@@ -2126,9 +2126,7 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 	int i, ret;
 
 	if (!trans || (trans->state != MSK_CONNECTED && trans->state != MSK_ROUTE_RESOLVED && trans->state != MSK_CONNECT_REQUEST)) {
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans (%p) isn't connected?", trans);
-		if (trans)
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "trans state: %d", trans->state);
+		INFO_LOG((trans ? trans->debug : 0) & MSK_DEBUG_EVENT, "trans (%p) state: %d", trans, trans->state);
 		return EINVAL;
 	}
 
