@@ -236,6 +236,10 @@ static void* flush_thread(void *arg) {
 			/* on error pos == -1 < file_rotate, just continue */
 			if (pos > thread_arg->file_rotate) {
 				pthread_mutex_lock(thread_arg->plock);
+				if (!*p_pcap_dumper) {
+					pthread_mutex_unlock(thread_arg->plock);
+					break;
+				}
 				pcap_dump_flush(pcap_dumper);
 				pcap_dump_close(pcap_dumper);
 				TEST_Z(rename(thread_arg->pcap_filename, backpath));
@@ -627,8 +631,9 @@ int main(int argc, char **argv) {
 		c_trans->private_data = &thread_arg;
 		TEST_Z(pthread_create(&thrid, NULL, setup_thread, child_trans));
 	}
-
+	pthread_mutex_lock(&lock);
 	pcap_dumper = NULL;
+	pthread_mutex_unlock(&lock);
 	pthread_join(flushthrid, NULL);
 
 	pcap_close(pcap);
