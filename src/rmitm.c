@@ -242,7 +242,9 @@ static void* flush_thread(void *arg) {
 				}
 				pcap_dump_flush(pcap_dumper);
 				pcap_dump_close(pcap_dumper);
-				TEST_Z(rename(thread_arg->pcap_filename, backpath));
+				if (rename(thread_arg->pcap_filename, backpath))
+					ERROR_LOG("renaming pcap file failed: %d", errno);
+
 				TEST_NZ(pcap_dumper = pcap_dump_open(thread_arg->pcap, thread_arg->pcap_filename));
 				*p_pcap_dumper = pcap_dumper;
 				pthread_mutex_unlock(thread_arg->plock);
