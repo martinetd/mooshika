@@ -1,0 +1,66 @@
+SPEED[bench_rdma]=medium
+TEST_TYPE[bench_rdma]=dev,admin,prod
+NEEDS_ROOT[bench_rdma]=yes
+bench_rdma() {
+	"$MSK_TEST_DIR/bench_rdma" -S localhost &
+	SERVPID="$!"
+	sleep 0.2
+
+	"$MSK_TEST_DIR/bench_rdma" -c localhost
+
+	# get server exit status
+	wait $SERVPID
+}
+
+SPEED[multiple_sge]=medium
+TEST_TYPE[multiple_sge]=dev,admin,prod
+NEEDS_ROOT[multiple_sge]=yes
+multiple_sge() {
+	"$MSK_TEST_DIR/multiple_sge" -S localhost &
+	SERVPID="$!"
+	sleep 0.2
+
+	"$MSK_TEST_DIR/multiple_sge" -c localhost
+
+	# get server exit status
+	wait $SERVPID
+}
+
+SPEED[read_write]=medium
+TEST_TYPE[read_write]=dev,admin,prod
+NEEDS_ROOT[read_write]=yes
+read_write() {
+	"$MSK_TEST_DIR/read_write" -S localhost &
+	SERVPID="$!"
+	sleep 0.2
+
+	"$MSK_TEST_DIR/read_write" -c localhost
+
+	# get server exit status
+	wait $SERVPID
+}
+
+SPEED[rcat]=medium
+TEST_TYPE[rcat]=dev,admin,prod
+NEEDS_ROOT[rcat]=yes
+rcat() {
+	( echo foo | "$MSK_TEST_DIR/../rcat" -S localhost > bar) &
+	SERVPID="$!"
+	sleep 0.2
+
+	FOO=$(echo bar | "$MSK_TEST_DIR/../rcat" -c localhost)
+
+	# get server exit status
+	wait $SERVPID
+
+	[[ "$FOO" = "foo" ]] || error "client didn't receive foo?"
+	[[ $(cat bar) = "bar" ]] || error "server didn't receive bar?"
+}
+
+run_mooshika() {
+	export MSK_TEST_DIR=$(dirname "$(readlink -m "$BASH_SOURCE")")
+	run_test bench_rdma "bench rdma read or writes"
+	run_test multiple_sge "test send with multiple sge"
+	run_test read_write "test small rdma read and writes"
+	run_test rcat "test bidirectional send/recv with rcat"
+}
