@@ -59,16 +59,9 @@
 #define DEFAULT_HARD_TRUNC_LEN (64*1024-1)
 #define DEFAULT_TRUNC_LEN 4096
 
-
-struct datalock {
-	msk_data_t *data;
-	pthread_mutex_t lock;
-};
-
 struct privatedata {
 	uint32_t seq_nr;
 	msk_trans_t *o_trans;
-	struct datalock *first_datalock;
 	struct thread_arg *targ;
 };
 
@@ -118,18 +111,15 @@ static void callback_error(msk_trans_t *trans, msk_data_t *pdata, void* arg) {
 }
 
 static void callback_send(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
-	struct datalock *datalock = arg;
 	struct privatedata *priv = trans->private_data;
 
-	if (!datalock || !priv) {
+	if (!priv) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
 
-	pthread_mutex_lock(&datalock->lock);
-	if (msk_post_recv(priv->o_trans, pdata, callback_recv, callback_error, datalock))
+	if (msk_post_recv(priv->o_trans, pdata, callback_recv, callback_error, arg))
 		ERROR_LOG("post_recv failed in send callback!");
-	pthread_mutex_unlock(&datalock->lock);
 }
 
 static void callback_disconnect(msk_trans_t *trans) {
@@ -144,12 +134,12 @@ static void callback_disconnect(msk_trans_t *trans) {
 }
 
 static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
-	struct datalock *datalock = arg;
 	struct pcap_pkthdr pcaphdr;
 	struct pkt_hdr *packet;
 	struct privatedata *priv = trans->private_data;
+	uint32_t next_seq;
 
-	if (!datalock || !priv) {
+	if (!priv) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
@@ -168,31 +158,33 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 		}
 	}
 
-	pthread_mutex_lock(&datalock->lock);
-	msk_post_send(priv->o_trans, pdata, callback_send, callback_error, datalock);
-
-	gettimeofday(&pcaphdr.ts, NULL);
-	pcaphdr.len = min(pdata->size + PACKET_HDR_LEN, priv->targ->hard_trunc);
-	pcaphdr.caplen = min(pcaphdr.len, priv->targ->trunc);
+	msk_post_send(priv->o_trans, pdata, callback_send, callback_error, arg);
 
 	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
-	/* ipv6 payload is tcp header + payload */
-	packet->ipv6.ip_len = htons(pdata->size + sizeof(struct tcp_hdr));
+	gettimeofday(&pcaphdr.ts, NULL);
+	if (pdata->size + PACKET_HDR_LEN > priv->targ->hard_trunc) {
+		pcaphdr.len = priv->targ->hard_trunc;
+		/* ipv6 payload is tcp header + payload */
+		packet->ipv6.ip_len = htons(priv->targ->hard_trunc - sizeof(struct ipv6_hdr));
+		/* sequence is incremented by payload only */
+		next_seq = htonl(ntohl(priv->seq_nr) + priv->targ->hard_trunc - PACKET_HDR_LEN);
+	} else {
+		pcaphdr.len = pdata->size + PACKET_HDR_LEN;
+		packet->ipv6.ip_len = htons(pdata->size + sizeof(struct tcp_hdr));
+		next_seq = htonl(ntohl(priv->seq_nr) + pdata->size);
+	}
+	pcaphdr.caplen = min(pcaphdr.len, priv->targ->trunc);
 
-	/* Need the lock both for writing in pcap_dumper AND for ack_nr,
-	 * otherwise some seq numbers are not ordered properly.
-	 */
-	pthread_mutex_lock(priv->targ->plock);
+	/* Need the lock for writing into pcap_dumper around file rotations */
 	packet->tcp.th_seq_nr = priv->seq_nr;
-	/* increment by the size of the tcp payload: just data */
-	priv->seq_nr = htonl(ntohl(priv->seq_nr) + pdata->size);
+	priv->seq_nr = next_seq;
 	packet->tcp.th_ack_nr = ((struct privatedata*)priv->o_trans->private_data)->seq_nr;
 	ipv6_tcp_checksum(packet);
 
+	pthread_mutex_lock(priv->targ->plock);
 	pcap_dump((u_char*)*priv->targ->p_pcap_dumper, &pcaphdr, (u_char*)packet);
 	pthread_mutex_unlock(priv->targ->plock);
-	pthread_mutex_unlock(&datalock->lock);
 }
 
 static void print_help(char **argv) {
@@ -264,7 +256,6 @@ static void *setup_thread(void *arg){
 	struct ibv_mr *mr;
 	struct thread_arg *thread_arg;
 	msk_data_t *data;
-	struct datalock *datalock;
 	struct pkt_hdr pkt_hdr;
 	int i;
 	struct privatedata *s_priv, *c_priv;
@@ -288,7 +279,6 @@ static void *setup_thread(void *arg){
 
 
 	TEST_NZ(data = malloc(2*thread_arg->recv_num*sizeof(msk_data_t)));
-	TEST_NZ(datalock = malloc(2*thread_arg->recv_num*sizeof(struct datalock)));
 
 	memset(&pkt_hdr, 0, sizeof(pkt_hdr));
 
@@ -329,8 +319,6 @@ static void *setup_thread(void *arg){
 		data[i].data=rdmabuf+(i)*(thread_arg->block_size+PACKET_HDR_LEN)+PACKET_HDR_LEN;
 		data[i].max_size=thread_arg->block_size;
 		data[i].mr = mr;
-		datalock[i].data = &data[i];
-		pthread_mutex_init(&datalock[i].lock, NULL);
 	}
 
 	// set up the data needed to communicate
@@ -348,12 +336,9 @@ static void *setup_thread(void *arg){
 	s_priv->o_trans = c_trans;
 	c_priv->o_trans = child_trans;
 
-	s_priv->first_datalock = datalock;
-	c_priv->first_datalock = datalock + thread_arg->recv_num;
-
 	for (i=0; i<thread_arg->recv_num; i++) {
-		TEST_Z(msk_post_recv(c_trans, (&c_priv->first_datalock[i])->data, callback_recv, callback_error, &c_priv->first_datalock[i]));
-		TEST_Z(msk_post_recv(child_trans, (&s_priv->first_datalock[i])->data, callback_recv, callback_error, &s_priv->first_datalock[i]));
+		TEST_Z(msk_post_recv(c_trans, &data[i], callback_recv, callback_error, NULL));
+		TEST_Z(msk_post_recv(child_trans, &data[i+thread_arg->recv_num], callback_recv, callback_error, NULL));
 	}
 
 	pthread_mutex_lock(thread_arg->plock);
@@ -376,7 +361,6 @@ static void *setup_thread(void *arg){
 
 	free(c_priv);
 	free(s_priv);
-	free(datalock);
 	free(data);
 	free(rdmabuf);
 
