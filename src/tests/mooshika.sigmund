@@ -44,11 +44,15 @@ SPEED[rcat]=medium
 TEST_TYPE[rcat]=dev,admin,prod
 NEEDS_ROOT[rcat]=yes
 rcat() {
-	( echo foo | "$MSK_TEST_DIR/../rcat" -S localhost > bar) &
+
+	# sleep needed because we want rcat to wait to get the other side's message
+	# and not quit as soon as our own is sent.
+
+	( (echo foo; sleep 1) | "$MSK_TEST_DIR/../rcat" -S localhost > bar) &
 	SERVPID="$!"
 	sleep 0.2
 
-	FOO=$(echo bar | "$MSK_TEST_DIR/../rcat" -c localhost)
+	FOO=$( (echo bar; sleep 1) | "$MSK_TEST_DIR/../rcat" -c localhost)
 
 	# get server exit status
 	wait $SERVPID
