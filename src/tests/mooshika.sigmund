@@ -4,12 +4,14 @@ NEEDS_ROOT[bench_rdma]=yes
 bench_rdma() {
 	"$MSK_TEST_DIR/bench_rdma" -S localhost &
 	SERVPID="$!"
+	trap "kill $SERVPID" ERR
 	sleep 0.2
 
 	"$MSK_TEST_DIR/bench_rdma" -c localhost
 
 	# get server exit status
 	wait $SERVPID
+	trap ERR
 }
 
 SPEED[multiple_sge]=medium
@@ -18,12 +20,14 @@ NEEDS_ROOT[multiple_sge]=yes
 multiple_sge() {
 	"$MSK_TEST_DIR/multiple_sge" -S localhost &
 	SERVPID="$!"
+	trap "kill $SERVPID" ERR
 	sleep 0.2
 
 	"$MSK_TEST_DIR/multiple_sge" -c localhost
 
 	# get server exit status
 	wait $SERVPID
+	trap ERR
 }
 
 SPEED[read_write]=medium
@@ -32,12 +36,14 @@ NEEDS_ROOT[read_write]=yes
 read_write() {
 	"$MSK_TEST_DIR/read_write" -S localhost &
 	SERVPID="$!"
+	trap "kill $SERVPID" ERR
 	sleep 0.2
 
 	"$MSK_TEST_DIR/read_write" -c localhost
 
 	# get server exit status
 	wait $SERVPID
+	trap ERR
 }
 
 SPEED[rcat]=medium
@@ -50,12 +56,14 @@ rcat() {
 
 	( (echo foo; sleep 1) | "$MSK_TEST_DIR/../rcat" -S localhost > bar) &
 	SERVPID="$!"
+	trap "kill $SERVPID" ERR
 	sleep 0.2
 
 	FOO=$( (echo bar; sleep 1) | "$MSK_TEST_DIR/../rcat" -c localhost)
 
 	# get server exit status
 	wait $SERVPID
+	trap ERR
 
 	[[ "$FOO" = "foo" ]] || error "client didn't receive foo?"
 	[[ $(cat bar) = "bar" ]] || error "server didn't receive bar?"
