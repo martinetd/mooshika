@@ -55,6 +55,7 @@
 
 #include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
+#include <netdb.h> /* gai_strerror() */
 
 #include "utils.h"
 #include "mooshika.h"
@@ -1679,8 +1680,12 @@ int msk_bind_server(struct msk_trans *trans) {
 
 	ret = rdma_getaddrinfo(trans->node, trans->port, &hints, &res);
 	if (ret) {
-		ret = errno;
-		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo: %s (%d)", strerror(ret), ret);
+		if (errno) {
+			ret = errno;
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo: %s (%d)", strerror(ret), ret);
+		} else {
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo failed: %s (%d)", gai_strerror(ret), ret);
+		}
 		return ret;
 	}
 	ret = rdma_bind_addr(trans->cm_id, res->ai_src_addr);
@@ -1946,8 +1951,15 @@ static int msk_bind_client(struct msk_trans *trans) {
 
 		ret = rdma_getaddrinfo(trans->node, trans->port, &hints, &res);
 		if (ret) {
-			ret = errno;
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo: %s (%d)", strerror(ret), ret);
+			/* this function can either return -1 with errno set,
+			 * or return as getaddrinfo.
+			 * Let's hope that if errno isn't set we have the other one.. */
+			if (errno) {
+				ret = errno;
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo: %s (%d)", strerror(ret), ret);
+			} else {
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo failed: %s (%d)", gai_strerror(ret), ret);
+			}
 			break;
 		}
 
