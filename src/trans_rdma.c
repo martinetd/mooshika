@@ -1549,6 +1549,7 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
  */
 static int msk_create_qp(struct msk_trans *trans, struct rdma_cm_id *cm_id) {
 	int ret;
+	struct msk_pd *pd;
 	struct ibv_qp_init_attr qp_attr = {
 		.cap.max_send_wr = trans->sq_depth,
 		.cap.max_send_sge = trans->max_send_sge,
@@ -1562,7 +1563,14 @@ static int msk_create_qp(struct msk_trans *trans, struct rdma_cm_id *cm_id) {
 		.srq = trans->srq,
 	};
 
-	if (rdma_create_qp(cm_id, msk_getpd(trans)->pd, &qp_attr)) {
+	pd = msk_getpd(trans);
+	if (!pd) {
+		ret = ENOSPC;
+		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "No space left in msk pd, multiple contexts per device?");
+		return ret;
+	}
+
+	if (rdma_create_qp(cm_id, pd->pd, &qp_attr)) {
 		ret = errno;
 		INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_create_qp: %s (%d)", strerror(ret), ret);
 		return ret;
