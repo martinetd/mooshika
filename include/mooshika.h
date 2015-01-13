@@ -122,6 +122,7 @@ struct msk_trans {
 	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
 	int server;			/**< 0 if client, connection backlog on server, -1 (MSK_SERVER_CHILD) if server's accepted connection */
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
+	int privport;			/**< set to 1 if mooshika should use a reserved port for client side */
 	uint32_t debug;
 	struct rdma_cm_id **conn_requests; /**< temporary child cm_id, only used for server */
 	struct msk_ctx *wctx;		/**< pointer to actual context data */
@@ -140,6 +141,7 @@ struct msk_trans_attr {
 	int debug;			/**< verbose output to stderr if set */
 	int server;			/**< 0 if client, connection backlog on server */
 	int destroy_on_disconnect;      /**< set to 1 if mooshika should perform cleanup */
+	int privport;			/**< set to 1 if mooshika should use a reserved port for client side */
 	long timeout;			/**< Number of mSecs to wait for connection management events */
 	int sq_depth;			/**< The depth of the Send Queue */
 	int max_send_sge;		/**< Maximum number of s/g elements per send */

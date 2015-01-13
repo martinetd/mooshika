@@ -40,3 +40,6 @@ static inline void sub_timespec(uint64_t *new, struct timespec *x, struct timesp
 			y->tv_nsec - x->tv_nsec;
 	}
 }
+
+#define MSK_MAX_RESVPORT 1023
+#define MSK_MIN_RESVPORT 512

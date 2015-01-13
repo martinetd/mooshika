@@ -1482,6 +1482,7 @@ int msk_init(struct msk_trans **ptrans, struct msk_trans_attr *attr) {
 		trans->timeout = attr->timeout   ? attr->timeout  : 30000; // in ms
 		trans->disconnect_callback = attr->disconnect_callback;
 		trans->destroy_on_disconnect = attr->destroy_on_disconnect;
+		trans->privport = attr->privport;
 		if (attr->stats_prefix) {
 			ret = strlen(attr->stats_prefix)+1;
 			trans->stats_prefix = malloc(ret);
@@ -1969,6 +1970,51 @@ static int msk_bind_client(struct msk_trans *trans) {
 				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "rdma_getaddrinfo failed: %s (%d)", gai_strerror(ret), ret);
 			}
 			break;
+		}
+
+		if (trans->privport) {
+			int port;
+			struct sockaddr_in sin = {
+				.sin_family      = AF_INET,
+				.sin_addr.s_addr = htonl(INADDR_ANY),
+			};
+			struct sockaddr_in6 sin6 = {
+				.sin6_family     = AF_INET6,
+				.sin6_addr       = IN6ADDR_ANY_INIT,
+			};
+
+			struct sockaddr *sa;
+
+			switch (res->ai_dst_addr->sa_family) {
+				case PF_INET:
+					sa = (struct sockaddr*)&sin;
+					for (port = MSK_MAX_RESVPORT; port > MSK_MIN_RESVPORT; port--) {
+						sin.sin_port = htons(port);
+						ret = rdma_bind_addr(trans->cm_id, sa);
+						if (ret)
+							ret = errno;
+						if (ret != EADDRNOTAVAIL)
+							break;
+					}
+					break;
+				case PF_INET6:
+					sa = (struct sockaddr*)&sin6;
+					for (port = MSK_MAX_RESVPORT; port > MSK_MIN_RESVPORT; port--) {
+						sin6.sin6_port = htons(port);
+						ret = rdma_bind_addr(trans->cm_id, sa);
+						if (ret)
+							ret = errno;
+						if (ret != EADDRNOTAVAIL)
+							break;
+					}
+					break;
+				default:
+					ERROR_LOG("res->ai_src_addr not valid?");
+					ret = EINVAL;
+			}
+			if (ret)
+				break;
+
 		}
 
 		ret = rdma_resolve_addr(trans->cm_id, res->ai_src_addr, res->ai_dst_addr, trans->timeout);
