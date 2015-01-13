@@ -1,29 +1,26 @@
 Summary: The mooshika library (libmooshika)
 Name: libmooshika
 Version: @VERSION@
-Release: @_GIT_HEAD_DESCRIBE@
-Group: Application/Devel
-Packager: Dominique Martinet <dominique.martinet@cea.fr>
-License: CeCILL
+Release: @_GIT_HEAD_DESCRIBE@%{?dist}
+Group: System Environment/Libraries
+License: LGPLv3
 Source: %{name}-%{version}.tar.gz
-BuildRoot: /tmp/%{name}-buildroot
-Prefix: %{_prefix}
 Requires: librdmacm, libibverbs
 BuildRequires: librdmacm-devel, libibverbs-devel, gcc, automake, libtool
 
 %package devel
-Group: Application/Devel
+Group: Development/Libraries
 Summary: Development files for libmooshika
 Requires: librdmacm-devel, libibverbs-devel
 
 %package rmitm
-Group: Application/Devel
+Group: Applications/System
 Summary: RDMA man in the middle and replay tool (rreplay)
 Requires: libpcap
 BuildRequires: libpcap-devel
 
 %package rcat
-Group:Application/Devel
+Group: Applications/System
 Summary: RDMA equivalent of netcat
 
 %description
@@ -71,4 +68,5 @@ rm -rf %{buildroot}
 
 %changelog
 
-
+* Tue Jan 13 2015 Dominique Martinet <dominique.martinet@cea.fr> - @VERSION@-@_GIT_HEAD_DESCRIBE@%{?dist}
+- Development package, see revision for git head.
