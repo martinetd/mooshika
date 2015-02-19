@@ -1,0 +1,22 @@
+Source: libmooshika
+Priority: extra
+Maintainer: Dominique Martinet <dominique.martinet@cea.fr>
+Build-Depends: debhelper (>= 8.0.0), autotools-dev, librdmacm-dev, libibverbs-dev, libpcap-dev
+Standards-Version: 3.9.3
+Section: libs
+Homepage: https://github.com/martinetd/mooshika
+Vcs-Git: git://github.com/martinetd/mooshika.git
+
+Package: libmooshika-dev
+Section: libdevel
+Architecture: any
+Depends: libmooshika1 (= ${binary:Version}), librdmacm-dev, libibverbs-dev
+Description: libmooshika is a RDMA helper lib
+ libmooshika is a RDMA helper lib
+
+Package: libmooshika1
+Section: libs
+Architecture: any
+Depends: librdmacm1, libibverbs1, libpcap0.8
+Description: libmooshika is a RDMA helper lib
+ libmooshika is a RDMA helper lib
