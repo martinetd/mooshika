@@ -1,0 +1,2 @@
+shlibs:Depends=libc6 (>= 2.7), libibverbs1 (>= 1.1.2), librdmacm1 (>= 1.0.15)
+misc:Depends=

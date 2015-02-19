@@ -1,0 +1,5 @@
+*.debhelper
+*.log
+libmooshika1
+libmooshika-dev
+tmp
