@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
 
 	if (trans->server) {
 		TEST_Z(msk_bind_server(trans));
-		trans = msk_accept_one(trans);
+		TEST_NZ(trans = msk_accept_one(trans));
 	} else { //client
 		TEST_Z(msk_connect(trans));
 	}
