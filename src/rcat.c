@@ -442,7 +442,7 @@ int main(int argc, char **argv) {
 				pthread_create(&id, &attr_thr, handle_trans, child_trans);
 			}
 		} else {
-			child_trans = msk_accept_one(trans);
+			TEST_NZ(child_trans = msk_accept_one(trans));
 			TEST_Z(setup_recv(child_trans, &thread_arg));
 			handle_trans(child_trans);
 		}
