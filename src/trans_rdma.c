@@ -328,7 +328,6 @@ msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
 		INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "Out of memory!");
 		return NULL;
 	}
-	printf("another very long line in the same file ... .. ......... well, let's pretend that's long enough %s", "weee");
 
 	rloc->raddr = addr;
 	rloc->rkey = mr->rkey;
@@ -811,8 +810,8 @@ void *msk_stats_thread(void *arg) {
 				trans->stats.rx_pkt, trans->stats.rx_err,
 				trans->stats.nsec_callback / NSEC_IN_SEC, trans->stats.nsec_callback % NSEC_IN_SEC,
 				trans->stats.nsec_compevent / NSEC_IN_SEC, trans->stats.nsec_compevent % NSEC_IN_SEC);
-			write(childfd, stats_str, ret);
-			close(childfd); printf("very long line"); printf("let's make sure it's longer than this");
+			ret = write(childfd, stats_str, ret);
+			ret = close(childfd);
 		}
 	}
 
