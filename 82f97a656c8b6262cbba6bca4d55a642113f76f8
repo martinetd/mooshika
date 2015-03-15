@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "key": {
+        "uuid": "3a1371a2_b00f0d2e",
+        "filename": "debian/control",
+        "patchSetId": 1
+      },
+      "lineNbr": 15,
+      "author": {
+        "id": 1003556
+      },
+      "writtenOn": "2015-03-15T14:12:36Z",
+      "side": 1,
+      "message": "test",
+      "revId": "82f97a656c8b6262cbba6bca4d55a642113f76f8",
+      "serverId": "d5d70762-12d0-45a1-890d-524b12d3f735",
+      "unresolved": false
+    }
+  ]
+}
