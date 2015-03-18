@@ -50,7 +50,7 @@
 #define DEFAULT_BLOCK_SIZE 1024*1024
 #define DEFAULT_RECV_NUM 4
 
-struct cb_arg {
+struct priv_data {
 	msk_data_t *ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
@@ -71,10 +71,10 @@ void callback_disconnect(msk_trans_t *trans) {
 	if (!trans->private_data)
 		return;
 
-	struct cb_arg *cb_arg = trans->private_data;
-	pthread_mutex_lock(cb_arg->lock);
-	pthread_cond_signal(cb_arg->cond);
-	pthread_mutex_unlock(cb_arg->lock);
+	struct priv_data *priv_data = trans->private_data;
+	pthread_mutex_lock(priv_data->lock);
+	pthread_cond_signal(priv_data->cond);
+	pthread_mutex_unlock(priv_data->lock);
 }
 
 
@@ -84,10 +84,10 @@ void callback_error(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 }
 
 void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
-	struct cb_arg *cb_arg = trans->private_data;
+	struct priv_data *priv_data = trans->private_data;
 	int n;
 
-	if (!cb_arg) {
+	if (!priv_data) {
 		ERROR_LOG("no callback_arg?");
 		return;
 	}
@@ -100,18 +100,18 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 		if (n != pdata->size)
 			ERROR_LOG("Wrote less than what was actually received");
 
-		if (msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg))
+		if (msk_post_recv(trans, pdata, callback_recv, callback_error, priv_data))
 			ERROR_LOG("post_recv failed");
-	        if (msk_post_send(trans, cb_arg->ackdata, NULL, NULL, NULL))
+	        if (msk_post_send(trans, priv_data->ackdata, NULL, NULL, NULL))
 			ERROR_LOG("post_send failed");
 	} else {
 	// or we get an ack and just send a signal to handle_thread thread
-		if(msk_post_recv(trans, pdata, callback_recv, callback_error, cb_arg))
+		if(msk_post_recv(trans, pdata, callback_recv, callback_error, priv_data))
 			ERROR_LOG("post_recv failed");
 
-		pthread_mutex_lock(cb_arg->lock);
-		pthread_cond_signal(cb_arg->cond);
-		pthread_mutex_unlock(cb_arg->lock);
+		pthread_mutex_lock(priv_data->lock);
+		pthread_cond_signal(priv_data->cond);
+		pthread_mutex_unlock(priv_data->lock);
 	}
 }
 
@@ -143,7 +143,7 @@ void* handle_trans(void *arg) {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 
-	struct cb_arg *cb_arg;
+	struct priv_data *priv_data;
 	int i;
 
 	struct pollfd pollfd_stdin;
@@ -161,13 +161,13 @@ void* handle_trans(void *arg) {
 	pthread_mutex_init(&lock, NULL);
 	pthread_cond_init(&cond, NULL);
 
-	TEST_NZ(cb_arg = malloc(sizeof(struct cb_arg)));
+	TEST_NZ(priv_data = malloc(sizeof(struct priv_data)));
 
-	cb_arg->ackdata = ackdata;
-	cb_arg->lock = &lock;
-	cb_arg->cond = &cond;
+	priv_data->ackdata = ackdata;
+	priv_data->lock    = &lock;
+	priv_data->cond    = &cond;
 
-	trans->private_data = cb_arg;
+	trans->private_data = priv_data;
 
 	// receive buffers are posted, we can finalize the connection
 	if (trans->server) {
@@ -231,7 +231,7 @@ void* handle_trans(void *arg) {
 
 	// free stuff
 	free(wdata);
-	free(cb_arg);
+	free(priv_data);
 	free(ackdata);
 
 	if (thread_arg->mt_server)
