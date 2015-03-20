@@ -1077,10 +1077,10 @@ static int msk_cq_event_handler(struct msk_trans *trans) {
 			case IBV_WC_RDMA_WRITE:
 			case IBV_WC_RDMA_READ:
 				INFO_LOG(trans->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc[i].opcode);
-				trans->stats.tx_pkt++;
-				trans->stats.tx_bytes += wc[i].byte_len;
-
 				ctx = (struct msk_ctx *)wc[i].wr_id;
+				trans->stats.tx_pkt++;
+				// wc[i].byte_len isn't filled on send, apparently
+				trans->stats.tx_bytes += ctx->data->size;
 
 				if (wc[i].wc_flags & IBV_WC_WITH_IMM) {
 					//FIXME ctx->data->imm_data = ntohl(wc.imm_data);
