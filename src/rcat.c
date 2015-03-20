@@ -54,6 +54,7 @@ struct priv_data {
 	msk_data_t *ackdata;
 	pthread_mutex_t *lock;
 	pthread_cond_t *cond;
+	int ack;
 };
 
 struct thread_arg {
@@ -105,11 +106,12 @@ void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 	        if (msk_post_send(trans, priv_data->ackdata, NULL, NULL, NULL))
 			ERROR_LOG("post_send failed");
 	} else {
-	// or we get an ack and just send a signal to handle_thread thread
+	// or we get an ack and just send a signal to handle_trans thread
 		if(msk_post_recv(trans, pdata, callback_recv, callback_error, priv_data))
 			ERROR_LOG("post_recv failed");
 
 		pthread_mutex_lock(priv_data->lock);
+		priv_data->ack = 0;
 		pthread_cond_signal(priv_data->cond);
 		pthread_mutex_unlock(priv_data->lock);
 	}
@@ -137,8 +139,9 @@ void* handle_trans(void *arg) {
 	msk_trans_t *trans = arg;
 	struct thread_arg *thread_arg = trans->private_data;
 	struct ibv_mr *mr;
-	msk_data_t *wdata;
 	msk_data_t *ackdata;
+	msk_data_t *wdatas;
+	int cur_data = 0;
 
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
@@ -166,6 +169,7 @@ void* handle_trans(void *arg) {
 	priv_data->ackdata = ackdata;
 	priv_data->lock    = &lock;
 	priv_data->cond    = &cond;
+	priv_data->ack     = 0;
 
 	trans->private_data = priv_data;
 
@@ -178,11 +182,15 @@ void* handle_trans(void *arg) {
 
 
 	// malloc write (send) structs to post data read from stdin
-	TEST_NZ(wdata = malloc(sizeof(msk_data_t)+thread_arg->block_size));
-	TEST_NZ(mr = msk_reg_mr(trans, (uint8_t*)(wdata+1), thread_arg->block_size, IBV_ACCESS_LOCAL_WRITE));
-	wdata->data = (uint8_t*)(wdata+1);
-	wdata->max_size = thread_arg->block_size;
-	wdata->mr = mr;
+	TEST_NZ(wdatas = malloc(2*(sizeof(msk_data_t)+thread_arg->block_size)));
+	TEST_NZ(mr = msk_reg_mr(trans, (uint8_t*)(wdatas+2), 2*thread_arg->block_size, IBV_ACCESS_LOCAL_WRITE));
+	wdatas[0].data = (uint8_t*)(wdatas+2);
+	wdatas[1].data = wdatas[0].data + thread_arg->block_size;
+	wdatas[0].max_size = thread_arg->block_size;
+	wdatas[1].max_size = thread_arg->block_size;
+	wdatas[0].mr = mr;
+	wdatas[1].mr = mr;
+
 
 	pollfd_stdin.fd = 0; // stdin
 	pollfd_stdin.events = POLLIN | POLLPRI;
@@ -198,19 +206,33 @@ void* handle_trans(void *arg) {
 		if (i == 0)
 			continue;
 
-		wdata->size = read(0, (char*)wdata->data, wdata->max_size);
-		if (wdata->size == 0)
+		wdatas[cur_data].size = read(0, (char*)wdatas[cur_data].data, wdatas[cur_data].max_size);
+		if (wdatas[cur_data].size == 0)
 			break;
 
-		// post our data and wait for the other end's ack (sent in callback_recv)
+
+		// Make sure we're done waiting and declare we're waiting for next
+		pthread_mutex_lock(&lock);
+		while (trans->state == MSK_CONNECTED && priv_data->ack) {
+			pthread_cond_wait(&cond, &lock);
+		}
+		priv_data->ack = 1;
+		pthread_mutex_unlock(&lock);
+
 		// can fail if e.g. other side already has hung up
 		// (can explain error callbacks too, e.g. post_send ok, hang up, actual send fails)
-		pthread_mutex_lock(&lock);
-		if (msk_post_send(trans, wdata, NULL, NULL, NULL))
+		if (msk_post_send(trans, wdatas + cur_data, NULL, NULL, NULL))
 			break;
-		pthread_cond_wait(&cond, &lock);
-		pthread_mutex_unlock(&lock);
+
+		cur_data = (cur_data + 1) % 2;
 	}	
+
+	pthread_mutex_lock(&lock);
+	if (trans->state == MSK_CONNECTED && priv_data->ack) {
+		// We're the ones closing, least we can do is wrap it up
+		pthread_cond_wait(&cond, &lock);
+	}
+	pthread_mutex_unlock(&lock);
 
 	if (thread_arg->stats)
 		fprintf(stderr,
@@ -228,13 +250,13 @@ void* handle_trans(void *arg) {
 			trans->stats.nsec_compevent / NSEC_IN_SEC, trans->stats.nsec_compevent % NSEC_IN_SEC);
 
 
-	TEST_Z(msk_dereg_mr(wdata->mr));
+	TEST_Z(msk_dereg_mr(wdatas->mr));
 	TEST_Z(msk_dereg_mr(ackdata->mr));
 
 	msk_destroy_trans(&trans);
 
 	// free stuff
-	free(wdata);
+	free(wdatas);
 	free(priv_data);
 	free(ackdata);
 
@@ -404,7 +426,7 @@ int main(int argc, char **argv) {
 	if (thread_arg.stats)
 		attr.debug |= MSK_DEBUG_SPEED;
 	if (thread_arg.recv_num == 0)
-		thread_arg.recv_num = attr.use_srq ? DEFAULT_RECV_NUM : 1;
+		thread_arg.recv_num = attr.use_srq ? DEFAULT_RECV_NUM : 2;
 
 	attr.rq_depth = thread_arg.recv_num+2;
 
