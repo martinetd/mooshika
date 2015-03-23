@@ -154,10 +154,11 @@ int main(int argc, char **argv) {
 
 	if (trans->server) {
 		TEST_Z(msk_bind_server(trans));
-		trans = msk_accept_one(trans);
+		TEST_NZ(trans = msk_accept_one(trans));
 
 	} else { //client
 		TEST_Z(msk_connect(trans));
+		TEST_NZ(trans);
 	}
 
 	TEST_NZ(rdmabuf = malloc((RECV_NUM+2)*CHUNK_SIZE*sizeof(char)));
@@ -240,11 +241,11 @@ int main(int argc, char **argv) {
 
 
 	} else {
-		rloc = msk_make_rloc(mr, (uint64_t)ackdata->data, ackdata->max_size);
+		TEST_NZ(rloc = msk_make_rloc(mr, (uint64_t)ackdata->data, ackdata->max_size));
 
 		memcpy(wdata->data, rloc, sizeof(msk_rloc_t));
 		wdata->size = sizeof(msk_rloc_t);
-		msk_post_send(trans, wdata, NULL, NULL, NULL);
+		TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL));
 
 		printf("sent rloc, waiting for server to say they're done\n");
 		TEST_Z(pthread_cond_wait(&cond, &lock)); // receive server ack (they wrote stuff)
@@ -262,8 +263,16 @@ int main(int argc, char **argv) {
 	}
 	pthread_mutex_unlock(&lock);
 
+	msk_dereg_mr(mr);
+
 	msk_destroy_trans(&trans);
 	msk_destroy_trans(&trans); // check that double_destroy works
+
+	free(rloc);
+	free(ackdata);
+	free(rdata);
+	free(wdata);
+	free(rdmabuf);
 
 	return 0;
 }

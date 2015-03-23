@@ -158,10 +158,11 @@ int main(int argc, char **argv) {
 
 	if (trans->server) {
 		TEST_Z(msk_bind_server(trans));
-		trans = msk_accept_one(trans);
+		TEST_NZ(trans = msk_accept_one(trans));
 
 	} else { //client
 		TEST_Z(msk_connect(trans));
+		TEST_NZ(trans);
 	}
 
 
@@ -235,7 +236,13 @@ int main(int argc, char **argv) {
 
 	pthread_mutex_unlock(&lock);
 
+	msk_dereg_mr(mr);
+
 	msk_destroy_trans(&trans);
+
+	free(rdata);
+	free(wdata);
+	free(mrbuf);
 
 	return 0;
 }

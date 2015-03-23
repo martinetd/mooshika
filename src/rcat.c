@@ -61,7 +61,7 @@ struct thread_arg {
 	int mt_server;
 	int stats;
 	int recv_num;
-	uint32_t block_size;
+	size_t block_size;
 	msk_data_t *rdata;
 };
 
@@ -362,7 +362,7 @@ int main(int argc, char **argv) {
 				if (tmp_s[0] != 0) {
 					set_size(thread_arg.block_size, tmp_s);
 				}
-				INFO_LOG(attr.debug > 1, "block size: %u", thread_arg.block_size);
+				INFO_LOG(attr.debug > 1, "block size: %zu", thread_arg.block_size);
 				break;
 			case 'r':
 				thread_arg.recv_num = strtoul(optarg, &tmp_s, 0);
@@ -465,7 +465,7 @@ int main(int argc, char **argv) {
 					break;
 				}
 				TEST_Z(setup_recv(child_trans, &thread_arg));
-				pthread_create(&id, &attr_thr, handle_trans, child_trans);
+				TEST_Z(pthread_create(&id, &attr_thr, handle_trans, child_trans));
 			}
 		} else {
 			TEST_NZ(child_trans = msk_accept_one(trans));
@@ -479,7 +479,8 @@ int main(int argc, char **argv) {
 		handle_trans(trans);
 	}
 
-
+	msk_dereg_mr(thread_arg.rdata[0].mr);
+	free(thread_arg.rdata[0].data);
 	free(thread_arg.rdata);
 
 	return 0;

@@ -149,7 +149,8 @@ int main(int argc, char **argv) {
 	char *pcap_file;
 	pcap_t *pcap;
 
-	uint32_t block_size = 0, recv_num = 0;
+	size_t block_size = 0;
+	uint32_t recv_num = 0;
 	int banner = 0;
 
 	int i, rc;
@@ -251,7 +252,7 @@ int main(int argc, char **argv) {
 				if (tmp_s[0] != 0) {
 					set_size(block_size, tmp_s);
 				}
-				INFO_LOG(trans_attr.debug > 1, "block size: %u", block_size);
+				INFO_LOG(trans_attr.debug > 1, "block size: %zu", block_size);
 				break;
 			case 'r':
 				recv_num = strtoul(optarg, NULL, 0);
@@ -281,20 +282,20 @@ int main(int argc, char **argv) {
 	trans_attr.rq_depth = recv_num+1;
 	trans_attr.sq_depth = recv_num+1;
 
-	/* msk init */
-	TEST_Z(msk_init(&trans, &trans_attr));
-
-	if (!trans) {
-		ERROR_LOG("msk_init failed! panic!");
-		exit(-1);
-	}
-
 	/* open pcap file */
 	pcap = pcap_open_offline( pcap_file, errbuf );
 
 	if (pcap == NULL) {
 		ERROR_LOG("Couldn't open pcap file: %s", errbuf);
 		return EINVAL;
+	}
+
+	/* msk init */
+	TEST_Z(msk_init(&trans, &trans_attr));
+
+	if (!trans) {
+		ERROR_LOG("msk_init failed! panic!");
+		exit(-1);
 	}
 
 	/* finish msk init */
@@ -305,7 +306,7 @@ int main(int argc, char **argv) {
 	else {
 		listen_trans = trans;
 		TEST_Z(msk_bind_server(listen_trans));
-		trans = msk_accept_one(listen_trans);
+		TEST_NZ(trans = msk_accept_one(listen_trans));
 	}
 
 	TEST_NZ(rdmabuf = malloc(mr_size));
