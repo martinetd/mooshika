@@ -213,7 +213,8 @@ void* handle_trans(void *arg) {
 	}	
 
 	if (thread_arg->stats)
-		printf("stats:\n"
+		fprintf(stderr,
+			"stats:\n"
 			"	tx_bytes\ttx_pkt\ttx_err\n"
 			"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
 			"	rx_bytes\trx_pkt\trx_err\n"
