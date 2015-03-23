@@ -153,7 +153,7 @@ void* handle_trans(void *arg) {
 	TEST_NZ(ackdata = malloc(sizeof(msk_data_t)+1));
 	TEST_NZ(mr = msk_reg_mr(trans, (uint8_t*)(ackdata + 1), 1, IBV_ACCESS_LOCAL_WRITE));
 	ackdata->data = (uint8_t*)(ackdata + 1);
-	ackdata->max_size = thread_arg->block_size;
+	ackdata->max_size = 1;
 	ackdata->size = 1;
 	ackdata->data[0] = 0;
 	ackdata->mr = mr;
