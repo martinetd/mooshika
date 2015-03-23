@@ -203,8 +203,11 @@ void* handle_trans(void *arg) {
 			break;
 
 		// post our data and wait for the other end's ack (sent in callback_recv)
+		// can fail if e.g. other side already has hung up
+		// (can explain error callbacks too, e.g. post_send ok, hang up, actual send fails)
 		pthread_mutex_lock(&lock);
-		TEST_Z(msk_post_send(trans, wdata, NULL, NULL, NULL));
+		if (msk_post_send(trans, wdata, NULL, NULL, NULL))
+			break;
 		pthread_cond_wait(&cond, &lock);
 		pthread_mutex_unlock(&lock);
 	}	
