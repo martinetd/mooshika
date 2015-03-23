@@ -130,20 +130,22 @@ static struct msk_global_state *msk_global_state = NULL;
 
 void __attribute__ ((constructor)) msk_internals_init(void) {
 	msk_global_state = malloc(sizeof(*msk_global_state));
-	if (!msk_global_state) {
+	if (!msk_global_state)
 		ERROR_LOG("Out of memory");
-	}
 
 	memset(msk_global_state, 0, sizeof(*msk_global_state));
 
 	msk_global_state->run_threads = 0;
-	pthread_mutex_init(&msk_global_state->lock, NULL);
+	if (pthread_mutex_init(&msk_global_state->lock, NULL))
+		ERROR_LOG("pthread_mutex_init failed?!");
 }
 
 void __attribute__ ((destructor)) msk_internals_fini(void) {
 
 	if (msk_global_state) {
+		pthread_mutex_lock(&msk_global_state->lock);
 		msk_global_state->run_threads = 0;
+		pthread_mutex_unlock(&msk_global_state->lock);
 
 		if (msk_global_state->cm_thread) {
 			pthread_join(msk_global_state->cm_thread, NULL);

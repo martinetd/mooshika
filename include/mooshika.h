@@ -150,7 +150,7 @@ struct msk_trans_attr {
 	int max_recv_sge;		/**< Maximum number of s/g elements per recv */
 	int worker_count;		/**< Number of worker threads - works only for the first init */
 	int worker_queue_size;		/**< Size of the worker data queue - works only for the first init */
-	int conn_type;			/**< RDMA Port space, probably RDMA_PS_TCP */
+	enum rdma_port_space conn_type;	/**< RDMA Port space, probably RDMA_PS_TCP */
 	char *node;			/**< The remote peer's hostname */
 	char *port;			/**< The service port (or name) */
 	struct msk_pd *pd;		/**< Protection Domain pointer */

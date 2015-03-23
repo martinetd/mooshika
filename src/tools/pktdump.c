@@ -54,13 +54,10 @@
 #include "../utils.h"
 #include "../rmitm.h"
 
-#define DEFAULT_BLOCK_SIZE 1024*1024 // nfs page size
-#define DEFAULT_HARD_TRUNC_LEN (64*1024-1)
 #define PACKET_SIZE (64*1024-1)
 
 struct thread_arg {
 	char *pcap_filename;
-	uint32_t block_size;
 };
 
 static void print_help(char **argv) {
@@ -71,11 +68,9 @@ static void print_help(char **argv) {
 		"Optional arguments:\n"
 		"	-f, --file pcap.out: output file (defaults to stdout)\n"
 		"	-r, --raw: assume input is binary, not hex\n"
-		"	-b, --block-size size: size of packets to send (default: %u)\n"
 		"	-v, --verbose: verbose, more v for more verbosity\n"
 		"	-q, --quiet: quiet output\n"
-		"	--not-an-option-yet: disable appending the tcp rpc header...\n",
-		DEFAULT_BLOCK_SIZE);
+		"	--not-an-option-yet: disable appending the tcp rpc header...\n");
 
 }
 
@@ -87,7 +82,8 @@ int main(int argc, char **argv) {
 	pcap_t *pcap;
 	pcap_dumper_t *pcap_dumper;
 	struct pcap_pkthdr pcaphdr;
-	char data[PACKET_SIZE];
+	char *data;
+	TEST_NZ(data = malloc(PACKET_SIZE));
 	struct pkt_hdr *pkt_hdr = (struct pkt_hdr *)data;
 	uint32_t *rpchdr = (uint32_t*)(data + PACKET_HDR_LEN);
 	char *buffer = data + PACKET_HDR_LEN + 4;
@@ -97,14 +93,12 @@ int main(int argc, char **argv) {
 	struct thread_arg thread_arg;
 	int option_index = 0;
 	int op, last_op;
-	char *tmp_s;
 	static struct option long_options[] = {
 		{ "client",	required_argument,	0,		'c' },
 		{ "server",	required_argument,	0,		's' },
 		{ "help",	no_argument,		0,		'h' },
 		{ "verbose",	no_argument,		0,		'v' },
 		{ "quiet",	no_argument,		0,		'q' },
-		{ "block-size",	required_argument,	0,		'b' },
 		{ "file",	required_argument,	0,		'f' },
 		{ "raw",	no_argument,		0,		'r' },
 		{ 0,		0,			0,		 0  }
@@ -124,7 +118,7 @@ int main(int argc, char **argv) {
 	thread_arg.pcap_filename = "-";
 
 	last_op = 0;
-	while ((op = getopt_long(argc, argv, "-@hvqs:c:w:b:f:r", long_options, &option_index)) != -1) {
+	while ((op = getopt_long(argc, argv, "-@hvqs:c:w:f:r", long_options, &option_index)) != -1) {
 		switch(op) {
 			case 1: // this means double argument
 				if (last_op == 'c') {
@@ -174,17 +168,6 @@ int main(int argc, char **argv) {
 			case 'r':
 				hex = 0;
 				break;
-			case 'b':
-				thread_arg.block_size = strtoul(optarg, &tmp_s, 0);
-				if (errno || thread_arg.block_size == 0) {
-					ERROR_LOG("Invalid block size, assuming default (%u)", DEFAULT_BLOCK_SIZE);
-					break;
-				}
-				if (tmp_s[0] != 0) {
-					set_size(thread_arg.block_size, tmp_s);
-				}
-				INFO_LOG(c_attr.debug > 1, "block size: %u", thread_arg.block_size);
-				break;
 			default:
 				ERROR_LOG("Failed to parse arguments");
 				print_help(argv);
@@ -199,9 +182,6 @@ int main(int argc, char **argv) {
 		exit(EINVAL);
 	}
 
-
-	if (thread_arg.block_size == 0)
-		thread_arg.block_size = DEFAULT_BLOCK_SIZE;
 
 	pcap = pcap_open_dead(DLT_RAW, PACKET_SIZE);
 	TEST_NZ(pcap_dumper = pcap_dump_open(pcap, thread_arg.pcap_filename));

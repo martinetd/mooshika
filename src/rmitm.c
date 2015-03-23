@@ -158,7 +158,7 @@ static void callback_recv(msk_trans_t *trans, msk_data_t *pdata, void *arg) {
 		}
 	}
 
-	msk_post_send(priv->o_trans, pdata, callback_send, callback_error, arg);
+	TEST_NZ(msk_post_send(priv->o_trans, pdata, callback_send, callback_error, arg));
 
 	packet = (struct pkt_hdr*)(pdata->data - PACKET_HDR_LEN);
 
