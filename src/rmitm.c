@@ -238,7 +238,7 @@ static void* flush_thread(void *arg) {
 				pthread_mutex_lock(thread_arg->plock);
 				pcap_dump_flush(pcap_dumper);
 				pcap_dump_close(pcap_dumper);
-				TEST_Z(rename(thread_arg->pcap_filename, backpath));
+				rename(thread_arg->pcap_filename, backpath);
 				TEST_NZ(pcap_dumper = pcap_dump_open(thread_arg->pcap, thread_arg->pcap_filename));
 				*p_pcap_dumper = pcap_dumper;
 				pthread_mutex_unlock(thread_arg->plock);
