@@ -1,6 +1,6 @@
 SUBDIRS = . tests tools #build . before tests
 
-AM_CFLAGS = -g -D_REENTRANT -Wall -Wimplicit -Wformat -Wmissing-braces -Wno-pointer-sign -Werror -I$(srcdir)/../include
+AM_CFLAGS = -g -D_REENTRANT $(WARNINGS_CFLAGS) -I$(srcdir)/../include
 
 lib_LTLIBRARIES = libmooshika.la
 libmooshika_la_SOURCES = trans_rdma.c

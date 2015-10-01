@@ -1,4 +1,4 @@
-AM_CFLAGS = -g -Wall -Werror -I$(srcdir)/../../include -I$(srcdir)/..
+AM_CFLAGS = -g @WARNINGS_CFLAGS@ -I$(srcdir)/../../include -I$(srcdir)/..
 
 noinst_PROGRAMS = read_write bench_rdma nfsv4_client multiple_sge
 read_write_SOURCES = read_write.c

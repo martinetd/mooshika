@@ -73,6 +73,13 @@ if test "x$with_valgrind" != "x" && test "x$with_valgrind" != "xno"; then
 fi
 
 
+AC_CANONICAL_BUILD
+
+WARNINGS_CFLAGS="-Wall -Wimplicit -Wformat -Wmissing-braces -Werror"
+if test "x$build_cpu" == "xarmv7hl"; then
+    WARNINGS_CFLAGS="$WARNINGS_CFLAGS -Wno-error=cpp"
+fi
+AC_SUBST([WARNINGS_CFLAGS])
 
 #for exporting to spec file
 AC_SUBST(ac_configure_args)
