@@ -805,8 +805,8 @@ void *msk_stats_thread(void *arg) {
 				"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
 				"	rx_bytes\trx_pkt\trx_err\n"
 				"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
-				"	callback time:   %lu.%09lu s\n"
-				"	completion time: %lu.%09lu s\n",
+				"	callback time:   %"PRIu64".%09"PRIu64" s\n"
+				"	completion time: %"PRIu64".%09"PRIu64" s\n",
 				trans->stats.tx_bytes, trans->stats.tx_pkt,
 				trans->stats.tx_err, trans->stats.rx_bytes,
 				trans->stats.rx_pkt, trans->stats.rx_err,
@@ -1064,7 +1064,7 @@ static int msk_cq_event_handler(struct msk_trans *trans) {
 					default:
 						break;
 				}
-				msk_signal_worker(trans, (struct msk_ctx *)wc[i].wr_id, wc[i].status, wc[i].opcode);
+				msk_signal_worker(trans, (struct msk_ctx *)(uintptr_t)wc[i].wr_id, wc[i].status, wc[i].opcode);
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
@@ -1079,7 +1079,7 @@ static int msk_cq_event_handler(struct msk_trans *trans) {
 			case IBV_WC_RDMA_WRITE:
 			case IBV_WC_RDMA_READ:
 				INFO_LOG(trans->debug & MSK_DEBUG_SEND, "WC_SEND/RDMA_WRITE/RDMA_READ: %d", wc[i].opcode);
-				ctx = (struct msk_ctx *)wc[i].wr_id;
+				ctx = (struct msk_ctx *)(uintptr_t)wc[i].wr_id;
 				trans->stats.tx_pkt++;
 				// wc[i].byte_len isn't filled on send, apparently
 				trans->stats.tx_bytes += ctx->data->size;
@@ -1103,7 +1103,7 @@ static int msk_cq_event_handler(struct msk_trans *trans) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "imm_data: %d", ntohl(wc[i].imm_data));
 				}
 
-				ctx = (struct msk_ctx *)wc[i].wr_id;
+				ctx = (struct msk_ctx *)(uintptr_t)wc[i].wr_id;
 			
 				// fill all the sizes in case of multiple sge
 				len = wc[i].byte_len;
@@ -2228,7 +2228,7 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 			return EINVAL;
 		} 
 		rctx->sg_list[i].addr = (uintptr_t) data->data;
-		INFO_LOG(trans->debug & MSK_DEBUG_RECV, "addr: %lx\n", rctx->sg_list->addr);
+		INFO_LOG(trans->debug & MSK_DEBUG_RECV, "addr: %"PRIu64"\n", rctx->sg_list->addr);
 		rctx->sg_list[i].length = data->max_size;
 		rctx->sg_list[i].lkey = data->mr->lkey;
 		if (i != num_sge-1)
@@ -2236,7 +2236,7 @@ int msk_post_n_recv(struct msk_trans *trans, msk_data_t *data, int num_sge, ctx_
 	}
 
 	rctx->wr.rwr.next = NULL;
-	rctx->wr.rwr.wr_id = (uint64_t)rctx;
+	rctx->wr.rwr.wr_id = (uintptr_t)rctx;
 	rctx->wr.rwr.sg_list = rctx->sg_list;
 	rctx->wr.rwr.num_sge = num_sge;
 
@@ -2311,7 +2311,7 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 		}
 
 		wctx->sg_list[i].addr = (uintptr_t)data->data;
-		INFO_LOG(trans->debug & MSK_DEBUG_SEND, "addr: %lx\n", wctx->sg_list[i].addr);
+		INFO_LOG(trans->debug & MSK_DEBUG_SEND, "addr: %"PRIu64"\n", wctx->sg_list[i].addr);
 		wctx->sg_list[i].length = data->size;
 		wctx->sg_list[i].lkey = data->mr->lkey;
 		totalsize += data->size;
@@ -2326,7 +2326,7 @@ static int msk_post_send_generic(struct msk_trans *trans, enum ibv_wr_opcode opc
 	}
 
 	wctx->wr.wwr.next = NULL;
-	wctx->wr.wwr.wr_id = (uint64_t)wctx;
+	wctx->wr.wwr.wr_id = (uintptr_t)wctx;
 	wctx->wr.wwr.opcode = opcode;
 //FIXME	wctx->wr.wwr.imm_data = htonl(data->imm_data);
 	wctx->wr.wwr.send_flags = IBV_SEND_SIGNALED;

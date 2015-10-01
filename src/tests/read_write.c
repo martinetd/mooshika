@@ -40,6 +40,7 @@
 #include <getopt.h>
 #include <errno.h>
 #include <poll.h>
+#include <inttypes.h> // PRIu64
 
 #include "utils.h"
 #include "mooshika.h"
@@ -213,7 +214,8 @@ int main(int argc, char **argv) {
 
 		TEST_NZ(rloc = malloc(sizeof(msk_rloc_t)));
 		memcpy(rloc, rdata->data, sizeof(msk_rloc_t));
-		printf("got rloc! key: %u, addr: %lu, size: %d\n", rloc->rkey, rloc->raddr, rloc->size);
+		printf("got rloc! key: %u, addr: %"PRIu64", size: %d\n",
+		       rloc->rkey, rloc->raddr, rloc->size);
 
 		memcpy(wdata->data, "roses are red", 14);
 		wdata->size = 14;
@@ -240,7 +242,7 @@ int main(int argc, char **argv) {
 		TEST_Z(msk_wait_send(trans, wdata)); // ack - other can quit
 
 	} else {
-		TEST_NZ(rloc = msk_make_rloc(mr, (uint64_t)ackdata->data, ackdata->max_size));
+		TEST_NZ(rloc = msk_make_rloc(mr, (uint64_t)(uintptr_t)ackdata->data, ackdata->max_size));
 
 		memcpy(wdata->data, rloc, sizeof(msk_rloc_t));
 		wdata->size = sizeof(msk_rloc_t);

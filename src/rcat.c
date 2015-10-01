@@ -241,8 +241,8 @@ void* handle_trans(void *arg) {
 			"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
 			"	rx_bytes\trx_pkt\trx_err\n"
 			"	%10"PRIu64"\t%"PRIu64"\t%"PRIu64"\n"
-			"	callback time:   %lu.%09lu s\n"
-			"	completion time: %lu.%09lu s\n",
+			"	callback time:   %"PRIu64".%09"PRIu64" s\n"
+			"	completion time: %"PRIu64".%09"PRIu64" s\n",
 			trans->stats.tx_bytes, trans->stats.tx_pkt,
 			trans->stats.tx_err, trans->stats.rx_bytes,
 			trans->stats.rx_pkt, trans->stats.rx_err,
