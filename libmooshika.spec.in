@@ -4,7 +4,7 @@ Version: @VERSION@
 Release: @_GIT_HEAD_DESCRIBE@%{?dist}
 License: LGPLv3
 Source: %{name}-%{version}.tar.gz
-BuildRequires: librdmacm-devel, libibverbs-devel, gcc, automake, libtool
+BuildRequires: librdmacm-devel, libibverbs-devel, automake, libtool
 
 %package devel
 Summary: Development files for libmooshika
@@ -35,17 +35,13 @@ RDMA equivalent of netcat
 %setup -q -n %{name}-%{version}
 
 %build
-%configure @ac_configure_args@ --enable-rmitm --disable-static
+%configure @ac_configure_args@ --enable-rmitm
 make %{?_smp_mflags}
 
 %install
-rm -rf %{buildroot}
 %makeinstall
 # remove unpackaged files from the buildroot
-rm -f $RPM_BUILD_ROOT%{_libdir}/*.la
-
-%clean
-rm -rf %{buildroot}
+rm -f %{buildroot}%{_libdir}/*.la
 
 %post -p /sbin/ldconfig
 %postun -p /sbin/ldconfig

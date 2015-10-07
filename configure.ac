@@ -5,7 +5,7 @@ AC_CONFIG_MACRO_DIR([m4])
 
 AC_GNU_SOURCE
 AC_PROG_CC
-AC_PROG_LIBTOOL
+LT_INIT([disable-static])
 
 # Check for InfiniBand Libs and Headers
 AC_SEARCH_LIBS([ibv_create_qp], [ibverbs], [], [
