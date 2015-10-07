@@ -2,25 +2,20 @@ Summary: The mooshika library (libmooshika)
 Name: libmooshika
 Version: @VERSION@
 Release: @_GIT_HEAD_DESCRIBE@%{?dist}
-Group: System Environment/Libraries
 License: LGPLv3
 Source: %{name}-%{version}.tar.gz
-Requires: librdmacm, libibverbs
 BuildRequires: librdmacm-devel, libibverbs-devel, gcc, automake, libtool
 
 %package devel
-Group: Development/Libraries
 Summary: Development files for libmooshika
 Requires: librdmacm-devel, libibverbs-devel
+Requires: %{name}%{?_isa} = %{version}-%{release}
 
 %package rmitm
-Group: Applications/System
 Summary: RDMA man in the middle and replay tool (rreplay)
-Requires: libpcap
 BuildRequires: libpcap-devel
 
 %package rcat
-Group: Applications/System
 Summary: RDMA equivalent of netcat
 
 %description
@@ -40,19 +35,23 @@ RDMA equivalent of netcat
 %setup -q -n %{name}-%{version}
 
 %build
-%configure @ac_configure_args@ --enable-rmitm
-make
+%configure @ac_configure_args@ --enable-rmitm --disable-static
+make %{?_smp_mflags}
 
 %install
 rm -rf %{buildroot}
 %makeinstall
+# remove unpackaged files from the buildroot
+rm -f $RPM_BUILD_ROOT%{_libdir}/*.la
 
 %clean
 rm -rf %{buildroot}
 
+%post -p /sbin/ldconfig
+%postun -p /sbin/ldconfig
+
 %files
-%{_libdir}/*.so*
-%{_libdir}/*.la
+%{_libdir}/*.so.*
 
 %files rmitm
 %{_bindir}/rmitm
@@ -63,7 +62,7 @@ rm -rf %{buildroot}
 
 %files devel
 %{_includedir}/*
-%{_libdir}/*.a
+%{_libdir}/*.so
 %{_libdir}/pkgconfig/*.pc
 
 %changelog
