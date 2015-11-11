@@ -567,7 +567,7 @@ static int msk_kill_worker_threads() {
 	/* wake up all threads - this value guarantees that we wait till a thread woke up before sending it again... */
 	/* FIXME make sure none is awake before sending that :) */
 	for (i=0; i < msk_global_state->worker_pool.worker_count; i++)
-		eventfd_write(msk_global_state->worker_pool.w_efd, 0xfffffffffffffffe);
+		eventfd_write(msk_global_state->worker_pool.w_efd, 0xfffffffffffffffeULL);
 
 	for (i=0; i < msk_global_state->worker_pool.worker_count; i++) {
 		pthread_join(msk_global_state->worker_pool.thrids[i], NULL);
