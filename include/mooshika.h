@@ -32,7 +32,6 @@
 #ifndef _MOOSHIKA_H
 #define _MOOSHIKA_H
 
-#include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 
 #define MOOSHIKA_API_VERSION 5

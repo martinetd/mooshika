@@ -38,6 +38,7 @@
 #include <string.h>	//memcpy
 #include <limits.h>	//INT_MAX
 #include <inttypes.h>	//uint*_t
+#include <endian.h>     //be64toh
 #include <errno.h>	//ENOMEM
 #include <sys/socket.h> //sockaddr
 #include <sys/un.h>     //sockaddr_un
@@ -53,7 +54,6 @@
 #define EPOLL_MAX_EVENTS 16
 #define NUM_WQ_PER_POLL 16
 
-#include <infiniband/arch.h>
 #include <rdma/rdma_cma.h>
 #include <netdb.h> /* gai_strerror() */
 
@@ -341,7 +341,7 @@ msk_rloc_t *msk_make_rloc(struct ibv_mr *mr, uint64_t addr, uint32_t size) {
 void msk_print_devinfo(struct msk_trans *trans) {
 	struct ibv_device_attr device_attr;
 	ibv_query_device(trans->cm_id->verbs, &device_attr);
-	uint64_t node_guid = ntohll(device_attr.node_guid);
+	uint64_t node_guid = be64toh(device_attr.node_guid);
 	printf("guid: %04x:%04x:%04x:%04x\n",
 		(unsigned) (node_guid >> 48) & 0xffff,
 		(unsigned) (node_guid >> 32) & 0xffff,
