@@ -414,6 +414,9 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
 	struct timespec ts_start, ts_end;
 
+	/* Set work completion status before calling callbacks */
+	ctx->data->status = status;
+
 	if (status) {
 		if (ctx->err_callback) {
 			if (trans->debug & MSK_DEBUG_SPEED)
@@ -590,7 +593,7 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	struct msk_worker_data *wd;
 	int i;
 
-	INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "signaling trans %p, ctx %p", trans, ctx);
+	INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "signaling trans %p, ctx %p, status %d", trans, ctx, status);
 
 	// Don't signal and do it directly if no worker
 	if (msk_global_state->worker_pool.worker_count == -1) {
@@ -2485,5 +2488,8 @@ uint16_t msk_get_dst_port(struct msk_trans *trans) {
 	return rdma_get_dst_port(trans->cm_id);
 }
 
+const char *msk_wc_status_str(enum ibv_wc_status status) {
+	return ibv_wc_status_str(status);
+}
 
 
