@@ -49,6 +49,7 @@ typedef struct msk_data {
 	uint8_t *data; /**< opaque data */
 	struct msk_data *next; /**< For recv/sends with multiple elements, used as a linked list */
 	struct ibv_mr *mr;
+	enum ibv_wc_status status; /**< work completion status, set upon reception of work completion */
 } msk_data_t;
 
 typedef union sockaddr_union {
@@ -255,5 +256,6 @@ uint16_t msk_get_dst_port(msk_trans_t *trans);
 
 struct msk_pd *msk_getpd(msk_trans_t *trans);
 
+const char *msk_wc_status_str(enum ibv_wc_status status);
 
 #endif /* _MOOSHIKA_H */

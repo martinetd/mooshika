@@ -414,6 +414,9 @@ static inline int msk_check_create_epoll_thread(pthread_t *thrid, void *(*start_
 static inline void msk_worker_callback(struct msk_trans *trans, struct msk_ctx *ctx, enum ibv_wc_status status, enum ibv_wc_opcode opcode) {
 	struct timespec ts_start, ts_end;
 
+	/* Set work completion status before calling callbacks */
+	ctx->data->status = status;
+
 	if (status) {
 		if (ctx->err_callback) {
 			if (trans->debug & MSK_DEBUG_SPEED)
@@ -590,7 +593,7 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 	struct msk_worker_data *wd;
 	int i;
 
-	INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "signaling trans %p, ctx %p", trans, ctx);
+	INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "signaling trans %p, ctx %p, status %d", trans, ctx, status);
 
 	// Don't signal and do it directly if no worker
 	if (msk_global_state->worker_pool.worker_count == -1) {
@@ -1012,7 +1015,9 @@ static void *msk_cm_thread(void *arg) {
  * msk_cq_event_handler: completion queue event handler.
  * marks contexts back out of use and calls the appropriate callbacks for each kind of event
  *
- * @return 0 on success, work completion status if not 0
+ * @return 0 on success
+ * @return negative work completion status if notified event was in error
+ * @return positive errno value if another error occured during processing
  */
 static int msk_cq_event_handler(struct msk_trans *trans) {
 	struct ibv_wc wc[NUM_WQ_PER_POLL];
@@ -1068,8 +1073,8 @@ static int msk_cq_event_handler(struct msk_trans *trans) {
 
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
 					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "cq completion failed status: %s (%d)", ibv_wc_status_str(wc[i].status), wc[i].status);
-					ret = wc[i].status;
-
+					// Work completion errors are returned as negative values
+					ret = -wc[i].status;
 				}
 				continue;
 			}
@@ -1138,7 +1143,7 @@ static int msk_cq_event_handler(struct msk_trans *trans) {
 
 	ibv_ack_cq_events(trans->cq, 1);
 
-	return -ret;
+	return ret;
 }
 
 /**
@@ -1189,7 +1194,7 @@ static void *msk_cq_thread(void *arg) {
 			ret = msk_cq_event_handler(trans);
 			if (ret) {
 				if (trans->state != MSK_CLOSED && trans->state != MSK_CLOSING && trans->state != MSK_ERROR) {
-					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "something went wrong with our cq_event_handler");
+					INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "something went wrong with our cq_event_handler: %d", ret);
 					trans->state = MSK_ERROR;
 					pthread_cond_broadcast(&trans->cm_cond);
 				}
@@ -2485,5 +2490,8 @@ uint16_t msk_get_dst_port(struct msk_trans *trans) {
 	return rdma_get_dst_port(trans->cm_id);
 }
 
+const char *msk_wc_status_str(enum ibv_wc_status status) {
+	return ibv_wc_status_str(status);
+}
 
 
