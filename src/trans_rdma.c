@@ -98,6 +98,15 @@ struct msk_worker_data {
 	enum ibv_wc_opcode opcode;
 };
 
+/** worker pool shared data
+ * the w_* values are worker-side, represent up till where workers have read
+ * and how far it is safe to read
+ * the m_* values are master-side, represent up till where master has written
+ * and how far it knows is safe to write
+ * The event-fd are directional, master writes in w_efd for workers to read
+ * and workers write in m_efd for master to read
+ * size is the queue size, rest should be obvious
+ */
 struct worker_pool {
 	pthread_t *thrids;
 	struct msk_worker_data *wd_queue;
@@ -471,7 +480,6 @@ static void* msk_worker_thread(void *arg) {
 	int i;
 
 	while (msk_global_state->run_threads > 0) {
-
 		if (pool->w_count > 0) {
 			i = atomic_dec(pool->w_count);
 			if (i < 0) {
@@ -484,11 +492,13 @@ static void* msk_worker_thread(void *arg) {
 				atomic_mask(pool->w_head, pool->size-1);
 			}
 		} else {
-			if (eventfd_read(pool->w_efd, &n) || n > INT_MAX) {
-				INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
+			if (eventfd_read(pool->w_efd, &n)) {
+				INFO_LOG(msk_global_state->debug & MSK_DEBUG_EVENT,
+					 "eventfd_read failed: %d", errno);
 				continue;
 			}
-			if (msk_global_state->run_threads == 0)
+			// kill worker signal writes a large value
+			if (n > pool->size || msk_global_state->run_threads == 0)
 				break;
 			INFO_LOG(msk_global_state->debug & MSK_DEBUG_WORKERS, "worker: %d", (int)n);
 			atomic_add(pool->w_count, (int)n);
@@ -558,7 +568,8 @@ static int msk_spawn_worker_threads() {
 	return ret;
 }
 
-/** msk_kill_worker_threads: stops and joins worker threads, assume that we hold msk_global_state->lock and msk_global_state->run_thread == 0;
+/** msk_kill_worker_threads: stops and joins worker threads,
+ * assume that we hold msk_global_state->lock and msk_global_state->run_thread == 0;
  */
 static int msk_kill_worker_threads() {
 	int i;
@@ -567,10 +578,11 @@ static int msk_kill_worker_threads() {
 		return 0;
 	}
 
-	/* wake up all threads - this value guarantees that we wait till a thread woke up before sending it again... */
-	/* FIXME make sure none is awake before sending that :) */
-	for (i=0; i < msk_global_state->worker_pool.worker_count; i++)
+	/* wake up all threads */
+	for (i=0; i < msk_global_state->worker_pool.worker_count; i++) {
+		/* this value guarantees that we wait till a thread woke up before sending it again... */
 		eventfd_write(msk_global_state->worker_pool.w_efd, 0xfffffffffffffffeULL);
+	}
 
 	for (i=0; i < msk_global_state->worker_pool.worker_count; i++) {
 		pthread_join(msk_global_state->worker_pool.thrids[i], NULL);
@@ -617,8 +629,9 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 		uint64_t n;
 		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
 
-		if (eventfd_read(msk_global_state->worker_pool.m_efd, &n) || n > INT_MAX) {
-			INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "eventfd_read failed");
+		if (eventfd_read(msk_global_state->worker_pool.m_efd, &n)) {
+			INFO_LOG(trans->debug & MSK_DEBUG_EVENT,
+				 "eventfd_read failed: %d", errno);
 		} else {
 			INFO_LOG(trans->debug & MSK_DEBUG_WORKERS, "master: %d\n", (int)n);
 			atomic_sub(msk_global_state->worker_pool.m_count, (int)n+1 /* we're doing inc again */);
