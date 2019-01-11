@@ -635,7 +635,8 @@ static int msk_signal_worker(struct msk_trans *trans, struct msk_ctx *ctx, enum 
 		i = atomic_postinc(msk_global_state->worker_pool.m_tail);
 		if (i >= msk_global_state->worker_pool.size) {
 			i = i & (msk_global_state->worker_pool.size-1);
-			atomic_mask(msk_global_state->worker_pool.w_head, msk_global_state->worker_pool.size-1);
+			atomic_mask(msk_global_state->worker_pool.m_tail,
+				    msk_global_state->worker_pool.size-1);
 		}
 
 		wd = &msk_global_state->worker_pool.wd_queue[i];
