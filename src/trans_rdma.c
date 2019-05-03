@@ -133,6 +133,8 @@ struct msk_global_state {
 	struct worker_pool worker_pool;
 };
 
+static int msk_cq_event_handler(struct msk_trans *trans);
+
 /* GLOBAL VARIABLES */
 
 static struct msk_global_state *msk_global_state = NULL;
@@ -935,6 +937,15 @@ static int msk_cma_event_handler(struct rdma_cm_id *cm_id, struct rdma_cm_event 
 			msk_cq_delfd(trans);
 
 		msk_mutex_lock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
+		// flush pending completions
+		if (trans->state != MSK_ERROR) {
+			do {
+				ret = msk_cq_event_handler(trans);
+			} while (ret == 0);
+
+			if (ret != EAGAIN)
+				INFO_LOG(trans->debug & MSK_DEBUG_EVENT, "couldn't flush pending data in cq: %d", ret);
+		}
 		trans->state = MSK_CLOSED;
 		pthread_cond_broadcast(&trans->cm_cond);
 		msk_mutex_unlock(trans->debug & MSK_DEBUG_CM_LOCKS, &trans->cm_lock);
