@@ -1,3 +1,9 @@
+libmooshika (1.1-1) unstable; urgency=low
+
+  * Create release to fix build issue
+
+ -- Dominique Martinet <dominique.martinet@codewreck.org>  Tue, 15 Dec 2021 06:44:34 +0900
+
 libmooshika (1.0-1) unstable; urgency=low
 
   * Initial release

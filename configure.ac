@@ -1,4 +1,4 @@
-AC_INIT([libmooshika], [1.0], [dominique.martinet@cea.fr])
+AC_INIT([libmooshika], [1.1], [dominique.martinet@codewreck.org])
 AM_INIT_AUTOMAKE([foreign])
 
 AC_CONFIG_MACRO_DIR([m4])
